@@ -10,6 +10,8 @@ add_library(sym_core STATIC
     horae.c
     ring.h
     ring.c
+    argus.h
+    argus.c
 )
 
 target_include_directories(sym_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
