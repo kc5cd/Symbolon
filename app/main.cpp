@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -175,11 +176,12 @@ struct CatOptions {
     std::string set_mode; // empty = don't set
     int set_preamp = -1;  // -1 = don't set, 0 = off, 1 = on
     std::string set_agc;  // empty = don't set
+    double set_power_w = -1.0; // <0 = don't set
 };
 
 // Phase 2, no keying: opens real CAT via Hamlib, applies any requested settings (frequency,
-// mode, preamp, AGC -- none of these are PTT, no RF is emitted by any of them), then prints
-// the rig's current status. hal_cat_set_ptt() exists and works (see
+// mode, preamp, AGC, TX power -- none of these are PTT, no RF is emitted by any of them),
+// then prints the rig's current status. hal_cat_set_ptt() exists and works (see
 // tests/hal/test_cat_hamlib.c against RIG_MODEL_DUMMY), but nothing in this CLI calls it;
 // per the kickoff's "never key the antenna first" ordering, that's Phase 4's job, after
 // core/atropos.c's watchdog exists.
@@ -189,6 +191,11 @@ int cat_info_mode(const CatOptions& opts)
     cfg.port = opts.port.c_str();
     cfg.baud = 19200; // X6200 SERIAL-B via the CH342 USB bridge, per the kickoff's hardware facts
     cfg.rig_model = RIG_MODEL_X6200;
+    // Hamlib's X6200 backend has no real tx power table (confirmed against real hardware,
+    // see hal_cat.h's field comment) -- 8W is the X6200's actual spec-sheet max (12V supply;
+    // 5W on its own battery), used here to make the watts<->fraction math accurate instead
+    // of trusting Hamlib's broken generic fallback.
+    cfg.max_tx_power_watts = 8.0f;
 
     hal_cat_t* cat = nullptr;
     if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
@@ -240,6 +247,16 @@ int cat_info_mode(const CatOptions& opts)
         }
     }
 
+    if (opts.set_power_w >= 0.0) {
+        // Round to the nearest 0.5W step -- the granularity this control is wired for.
+        float watts = std::round((float)opts.set_power_w * 2.0f) / 2.0f;
+        if (hal_cat_set_power_watts(cat, watts) != HAL_RC_OK) {
+            std::cerr << "Failed to set TX power: " << hal_cat_last_error(cat) << "\n";
+            hal_cat_close(cat);
+            return 1;
+        }
+    }
+
     uint64_t freq_hz = 0;
     if (hal_cat_get_freq_hz(cat, &freq_hz) == HAL_RC_OK) {
         std::cout << "Frequency: " << freq_hz << " Hz\n";
@@ -266,6 +283,13 @@ int cat_info_mode(const CatOptions& opts)
         std::cout << "AGC: " << cat_agc_name(agc) << "\n";
     } else {
         std::cerr << "Failed to read AGC: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    float power_w = 0.0f;
+    if (hal_cat_get_power_watts(cat, &power_w) == HAL_RC_OK) {
+        std::cout << "TX power: " << power_w << " W\n";
+    } else {
+        std::cerr << "Failed to read TX power: " << hal_cat_last_error(cat) << "\n";
     }
 
     hal_cat_close(cat);
@@ -327,6 +351,10 @@ int main(int argc, char** argv)
         }
         if (std::strcmp(argv[i], "--cat-agc") == 0 && i + 1 < argc) {
             cat_opts.set_agc = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--cat-set-power") == 0 && i + 1 < argc) {
+            cat_opts.set_power_w = std::stod(argv[++i]);
             continue;
         }
     }

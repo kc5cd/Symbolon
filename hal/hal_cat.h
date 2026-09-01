@@ -42,6 +42,16 @@ typedef struct {
     uint32_t    baud;      /* 19200 -- X6200 SERIAL-B via the CH342 USB bridge */
     int         rig_model; /* RIG_MODEL_X6200 (Hamlib rigs/icom/xiegu.c) */
     uint32_t    timeout_ms;
+
+    /* hal_cat_set/get_power_watts() normally convert through Hamlib's own
+       rig_mW2power()/rig_power2mW(), which look up the backend's tx_range_list for the
+       current freq/mode. Confirmed empirically against real X6200 hardware (2026-09-01,
+       see .claude/state/context.md) that RIG_MODEL_X6200's tx_range_list is empty -- Hamlib
+       silently falls back to a generic default scale that has nothing to do with this rig's
+       real ~8W ceiling. Setting this nonzero makes the watts<->fraction conversion linear
+       against this ceiling instead, bypassing Hamlib's table lookup entirely. 0 = trust
+       Hamlib (correct for a rig whose backend does populate a real power table). */
+    float max_tx_power_watts;
 } hal_cat_config_t;
 
 hal_rc_t hal_cat_open(hal_cat_t** out, const hal_cat_config_t* config);
@@ -62,6 +72,13 @@ hal_rc_t hal_cat_get_preamp(hal_cat_t* cat, bool* out_enabled);
 
 hal_rc_t hal_cat_set_agc(hal_cat_t* cat, hal_cat_agc_t agc);
 hal_rc_t hal_cat_get_agc(hal_cat_t* cat, hal_cat_agc_t* out_agc);
+
+/* Watts, not RIG_LEVEL_RFPOWER's raw [0.0..1.0] fraction -- converted via
+   rig_mW2power()/rig_power2mW() against the rig's current frequency/mode, per Hamlib's own
+   documented pattern for that level, unless hal_cat_config_t.max_tx_power_watts overrides
+   it (see that field's comment). */
+hal_rc_t hal_cat_set_power_watts(hal_cat_t* cat, float watts);
+hal_rc_t hal_cat_get_power_watts(hal_cat_t* cat, float* out_watts);
 
 /* atropos.c's watchdog is the one caller that must be able to reach this through
    sym_host_t.ptt_set without going through Hamlib's normal request path -- see

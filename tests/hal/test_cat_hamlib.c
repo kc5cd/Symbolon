@@ -97,6 +97,43 @@ static void test_agc_roundtrip(void)
     hal_cat_close(cat);
 }
 
+static void test_power_roundtrip(void)
+{
+    hal_cat_t* cat = open_dummy();
+
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_set_freq_hz(cat, 14074000));
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_set_mode(cat, HAL_CAT_MODE_USB));
+
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_set_power_watts(cat, 5.0f));
+    float watts = 0.0f;
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_get_power_watts(cat, &watts));
+    /* mW<->fraction round-trip through the dummy rig's own max-power scale isn't exact to
+       the mW -- half-watt tolerance matches the 0.5W granularity this is wired for. */
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 5.0f, watts);
+
+    hal_cat_close(cat);
+}
+
+static void test_power_override_roundtrip(void)
+{
+    /* Exercises the max_tx_power_watts override path (see hal_cat.h) rather than Hamlib's
+       own rig_mW2power()/rig_power2mW() -- confirmed against real X6200 hardware that its
+       Hamlib backend's own conversion is unusable, see context.md's 2026-09-01 entry. */
+    hal_cat_config_t config = { 0 };
+    config.rig_model = RIG_MODEL_DUMMY;
+    config.max_tx_power_watts = 8.0f;
+
+    hal_cat_t* cat = NULL;
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_open(&cat, &config));
+
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_set_power_watts(cat, 4.0f));
+    float watts = 0.0f;
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_get_power_watts(cat, &watts));
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 4.0f, watts);
+
+    hal_cat_close(cat);
+}
+
 static void test_ptt_roundtrip(void)
 {
     hal_cat_t* cat = open_dummy();
@@ -125,6 +162,8 @@ int main(void)
     RUN_TEST(test_data_l_mode_roundtrip);
     RUN_TEST(test_preamp_roundtrip);
     RUN_TEST(test_agc_roundtrip);
+    RUN_TEST(test_power_roundtrip);
+    RUN_TEST(test_power_override_roundtrip);
     RUN_TEST(test_ptt_roundtrip);
     return UNITY_END();
 }

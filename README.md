@@ -80,12 +80,23 @@ symbolon --cat-set-freq <hz>      # set VFO frequency (with --cat-port)
 symbolon --cat-set-mode <mode>    # USB | LSB | DATA-U | DATA-L | CW (with --cat-port)
 symbolon --cat-preamp <on|off>    # toggle the front-end preamp (with --cat-port)
 symbolon --cat-agc <setting>      # off | slow | fast | auto (with --cat-port)
+symbolon --cat-set-power <watts>  # TX power, rounded to the nearest 0.5W (with --cat-port)
 ```
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
-keying**) — none of them ever assert PTT, including a frequency, mode, preamp, or AGC change.
+keying**) — none of them ever assert PTT, including the power/mode/AGC/preamp controls.
 Round-trip a synthesized message through the decoder as a sanity check:
 `symbolon --tx-test "CQ KC5CD EM12" out.wav && symbolon --decode-wav out.wav`.
+
+**TX power caveat, confirmed against real X6200 hardware**: Hamlib's `RIG_MODEL_X6200`
+backend doesn't populate a real TX power table, so `--cat-set-power` computes the
+watts↔fraction conversion itself against the X6200's actual 8W (12V supply) spec-sheet max
+rather than trusting Hamlib's generic fallback (which silently assumed a wrong, much higher
+ceiling). The *set* side is accurate — confirmed exact at full power (8W commanded → 8W read
+back) — but the printed readback at partial power settings doesn't track linearly with what
+was set, most likely real PA drive-curve behavior rather than a bug in this code. Don't treat
+that printed number as exact except at full power; check the rig's own display or a wattmeter
+for actual output at a given setting.
 
 The `ctest` suite includes a regression corpus (`corpus.aggregate`) that decodes ~30 real
 FT8 recordings from `third_party/ft8_lib/test/wav/` and checks aggregate recall against

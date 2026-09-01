@@ -13,6 +13,7 @@
 
 struct hal_cat {
     RIG* rig;
+    float max_tx_power_watts; /* 0 = trust Hamlib's own mW2power/power2mW; see hal_cat.h */
     char last_error[256];
 };
 
@@ -106,6 +107,7 @@ hal_rc_t hal_cat_open(hal_cat_t** out, const hal_cat_config_t* config)
     if (config->timeout_ms != 0) {
         cat->rig->state.rigport.timeout = (int)config->timeout_ms;
     }
+    cat->max_tx_power_watts = config->max_tx_power_watts;
 
     int rc = rig_open(cat->rig);
     if (rc != RIG_OK) {
@@ -267,6 +269,91 @@ hal_rc_t hal_cat_get_agc(hal_cat_t* cat_handle, hal_cat_agc_t* out_agc)
         return record_hamlib_error(cat, "rig_get_level(AGC)", rc);
     }
     *out_agc = hamlib_agc_to_hal(val.i);
+    return HAL_RC_OK;
+}
+
+hal_rc_t hal_cat_set_power_watts(hal_cat_t* cat_handle, float watts)
+{
+    struct hal_cat* cat = (struct hal_cat*)cat_handle;
+    if (cat == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+
+    float power_fraction;
+    if (cat->max_tx_power_watts > 0.0f) {
+        /* Hamlib's tx_range_list lookup bypassed -- see hal_cat.h's field comment. */
+        power_fraction = watts / cat->max_tx_power_watts;
+    } else {
+        freq_t freq = 0.0;
+        rmode_t mode = RIG_MODE_NONE;
+        pbwidth_t width = 0;
+        int rc = rig_get_freq(cat->rig, RIG_VFO_CURR, &freq);
+        if (rc != RIG_OK) {
+            return record_hamlib_error(cat, "rig_get_freq (for power set)", rc);
+        }
+        rc = rig_get_mode(cat->rig, RIG_VFO_CURR, &mode, &width);
+        if (rc != RIG_OK) {
+            return record_hamlib_error(cat, "rig_get_mode (for power set)", rc);
+        }
+        rc = rig_mW2power(cat->rig, &power_fraction, (unsigned int)(watts * 1000.0f), freq, mode);
+        if (rc != RIG_OK) {
+            return record_hamlib_error(cat, "rig_mW2power", rc);
+        }
+    }
+
+    value_t val;
+    val.f = power_fraction;
+    int rc = rig_set_level(cat->rig, RIG_VFO_CURR, RIG_LEVEL_RFPOWER, val);
+    return (rc == RIG_OK) ? HAL_RC_OK : record_hamlib_error(cat, "rig_set_level(RFPOWER)", rc);
+}
+
+/* Confirmed against real X6200 hardware (2026-09-01): with max_tx_power_watts set, SET is
+   exact at 100% (8W commanded -> 8W read back), but readback at partial power doesn't track
+   linearly with what was set (e.g. 5W set read back as ~3.4W). Left as informational -- this
+   looks like real PA drive-curve nonlinearity or a live meter reading rather than an echo of
+   the commanded level, not something fixable from this side of the CAT link. Don't treat
+   this return value as exact at anything but full power; the rig's own display or a
+   wattmeter is ground truth. */
+hal_rc_t hal_cat_get_power_watts(hal_cat_t* cat_handle, float* out_watts)
+{
+    struct hal_cat* cat = (struct hal_cat*)cat_handle;
+    if (cat == NULL || out_watts == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+
+    value_t val;
+    int rc = rig_get_level(cat->rig, RIG_VFO_CURR, RIG_LEVEL_RFPOWER, &val);
+    if (rc != RIG_OK) {
+        *out_watts = 0.0f;
+        return record_hamlib_error(cat, "rig_get_level(RFPOWER)", rc);
+    }
+
+    if (cat->max_tx_power_watts > 0.0f) {
+        *out_watts = val.f * cat->max_tx_power_watts;
+        return HAL_RC_OK;
+    }
+
+    freq_t freq = 0.0;
+    rmode_t mode = RIG_MODE_NONE;
+    pbwidth_t width = 0;
+    rc = rig_get_freq(cat->rig, RIG_VFO_CURR, &freq);
+    if (rc != RIG_OK) {
+        *out_watts = 0.0f;
+        return record_hamlib_error(cat, "rig_get_freq (for power get)", rc);
+    }
+    rc = rig_get_mode(cat->rig, RIG_VFO_CURR, &mode, &width);
+    if (rc != RIG_OK) {
+        *out_watts = 0.0f;
+        return record_hamlib_error(cat, "rig_get_mode (for power get)", rc);
+    }
+
+    unsigned int mw_power = 0;
+    rc = rig_power2mW(cat->rig, &mw_power, val.f, freq, mode);
+    if (rc != RIG_OK) {
+        *out_watts = 0.0f;
+        return record_hamlib_error(cat, "rig_power2mW", rc);
+    }
+    *out_watts = (float)mw_power / 1000.0f;
     return HAL_RC_OK;
 }
 
