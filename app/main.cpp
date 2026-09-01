@@ -34,6 +34,7 @@
 
 extern "C" {
 #include "argus.h"
+#include "atropos.h"
 #include "cerberus.h"
 #include "hal_audio.h"
 #include "hal_cat.h"
@@ -529,6 +530,129 @@ int dump_config_mode(const ConfigOptions& opts)
     return 0;
 }
 
+// sym_host_t adapters -- the seam core/atropos.c is built around (see core/sym_types.h):
+// core/ never calls hal_*/OS functions directly, so app/ wires real HAL calls into the
+// plain function pointers atropos.c calls through instead. hal_rc_t *is* sym_rc_t (a plain
+// typedef alias, see hal/hal_types.h), so hal_ptt_set_adapter needs no translation at all.
+uint64_t hal_mono_us_adapter(void* user)
+{
+    (void)user;
+    return hal_time_mono_us();
+}
+
+uint64_t hal_utc_us_adapter(void* user)
+{
+    (void)user;
+    return hal_time_utc_us();
+}
+
+sym_rc_t hal_ptt_set_adapter(void* user, int assert_tx)
+{
+    hal_cat_t* cat = static_cast<hal_cat_t*>(user);
+    return hal_cat_set_ptt(cat, assert_tx != 0);
+}
+
+// Phase 4's own kickoff-specified bench verification, done for real against real hardware --
+// but only after core/atropos.c's own offline unit tests (tests/core/test_atropos.c) already
+// prove the mechanism with a fake clock, per the kickoff's explicit ordering ("fires under a
+// simulated stall -- as a unit test -- before it's ever verified on the air").
+//
+// Deliberately asserts PTT and then never releases it from this harness -- the entire point
+// is proving atropos_watchdog_tick() is what turns it back off, not this code. A second,
+// independent hard backstop (kHardBackstopUs, well past atropos.c's own 13.5s) exists only so
+// a bug in atropos.c can never leave the rig transmitting unattended during this test --
+// belt-and-suspenders, not a substitute for the real watchdog gate: if the backstop is ever
+// the thing that actually fires, that's reported as a FAIL, not treated as a safe fallback.
+int atropos_watchdog_test_mode(const std::string& port, float power_watts)
+{
+    hal_cat_config_t cfg{};
+    cfg.port = port.c_str();
+    cfg.baud = 19200;
+    cfg.rig_model = RIG_MODEL_X6200;
+    cfg.max_tx_power_watts = 8.0f;
+
+    hal_cat_t* cat = nullptr;
+    if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
+        std::cerr << "Failed to open CAT on " << port << "\n";
+        return 1;
+    }
+
+    if (hal_cat_set_power_watts(cat, power_watts) != HAL_RC_OK) {
+        std::cerr << "Failed to set TX power to " << power_watts << " W: " << hal_cat_last_error(cat) << "\n";
+        hal_cat_close(cat);
+        return 1;
+    }
+
+    std::cout << "*** PTT WATCHDOG BENCH TEST ***\n"
+              << "About to assert PTT at " << power_watts << " W on " << port << ".\n"
+              << "This is a DELIBERATE hang: this test harness will NOT release PTT itself.\n"
+              << "core/atropos.c's watchdog is expected to force it off automatically at ~13.5s.\n"
+              << "An independent hard backstop in this harness will force it off at 16s and\n"
+              << "report FAILURE if the watchdog somehow doesn't fire first.\n\n"
+              << "Confirm the rig is connected to a dummy load, not an antenna, before continuing.\n"
+              << "Press Enter to assert PTT, or Ctrl+C to abort...\n";
+    std::string line;
+    std::getline(std::cin, line);
+
+    sym_host_t host{};
+    host.mono_us = hal_mono_us_adapter;
+    host.utc_us = hal_utc_us_adapter;
+    host.ptt_set = hal_ptt_set_adapter;
+    host.user = cat;
+
+    atropos_config_t atropos_cfg{};
+    atropos_cfg.ptt_watchdog_us = 13500000ULL; // 13.5s -- the kickoff's own spec constant
+
+    atropos_t atropos;
+    atropos_init(&atropos, &atropos_cfg, &host);
+
+    std::cout << "\nAsserting PTT now...\n";
+    if (hal_cat_set_ptt(cat, true) != HAL_RC_OK) {
+        std::cerr << "Failed to assert PTT: " << hal_cat_last_error(cat) << "\n";
+        hal_cat_close(cat);
+        return 1;
+    }
+    atropos_ptt_asserted(&atropos);
+
+    const uint64_t kHardBackstopUs = 16ULL * 1000000ULL;
+    uint64_t start_us = hal_time_mono_us();
+    bool watchdog_fired = false;
+
+    for (;;) {
+        uint64_t elapsed_us = hal_time_mono_us() - start_us;
+        std::cout << "\r  PTT held for " << (double)elapsed_us / 1000000.0 << "s..." << std::flush;
+
+        if (atropos_watchdog_tick(&atropos)) {
+            watchdog_fired = true;
+            std::cout << "\n\nWatchdog fired at " << (double)elapsed_us / 1000000.0 << "s -- PTT forced off.\n";
+            break;
+        }
+        if (elapsed_us >= kHardBackstopUs) {
+            std::cerr << "\n\n*** HARD BACKSTOP: watchdog did not fire by 16s -- forcing PTT off from this harness. ***\n";
+            hal_cat_set_ptt(cat, false);
+            hal_cat_close(cat);
+            return 1;
+        }
+        hal_time_sleep_us(200000);
+    }
+
+    bool still_asserted = true;
+    if (hal_cat_get_ptt(cat, &still_asserted) == HAL_RC_OK) {
+        std::cout << "Rig-reported PTT state: " << (still_asserted ? "STILL ASSERTED (FAIL)" : "off (confirmed)") << "\n";
+    } else {
+        std::cout << "Warning: couldn't read back PTT state: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    hal_cat_close(cat);
+
+    if (watchdog_fired && !still_asserted) {
+        std::cout << "\n*** PASS: PTT watchdog test succeeded. ***\n";
+        return 0;
+    }
+    std::cerr << "\n*** FAIL: watchdog test did not complete cleanly. ***\n";
+    return 1;
+}
+
 // Phase 3: confirm mode. Same capture/slot/decode loop as the default listening mode below,
 // with every decode also run through cerberus_evaluate() and fed into the qso.c state
 // machine; when a reply is composed, the operator confirms with any keypress within a short
@@ -709,6 +833,8 @@ int main(int argc, char** argv)
     bool dump_config = false;
     bool confirm = false;
     std::string current_band;
+    std::string atropos_test_port;
+    float atropos_test_power_w = 0.5f;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -818,6 +944,14 @@ int main(int argc, char** argv)
             current_band = argv[++i];
             continue;
         }
+        if (std::strcmp(argv[i], "--atropos-watchdog-test") == 0 && i + 1 < argc) {
+            atropos_test_port = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--atropos-test-power") == 0 && i + 1 < argc) {
+            atropos_test_power_w = std::stof(argv[++i]);
+            continue;
+        }
     }
 
     if (dump_config) {
@@ -826,6 +960,9 @@ int main(int argc, char** argv)
     if (confirm) {
         SymbolonConfig cfg = build_effective_config(config_opts);
         return confirm_mode(cfg, device_name, current_band);
+    }
+    if (!atropos_test_port.empty()) {
+        return atropos_watchdog_test_mode(atropos_test_port, atropos_test_power_w);
     }
     if (!decode_wav_path.empty()) {
         return decode_wav_mode(decode_wav_path);

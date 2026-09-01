@@ -89,14 +89,20 @@ symbolon --beacon-token-file <path>  # private free-text beacon token, kept out 
 symbolon --dump-config            # print the effective whitelist/gates config and exit
 symbolon --confirm                # confirm-mode QSO dry run (see below) -- needs --my-call + --whitelist
 symbolon --current-band <name>    # tells confirm mode what band it's on, for the band gate
+symbolon --atropos-watchdog-test <port>   # bench test: real PTT, deliberately hung (see below)
+symbolon --atropos-test-power <watts>     # TX power for the watchdog test (default 0.5W)
 ```
 
 `--confirm` is Phase 3 (rules engine + QSO state machine): matches incoming decodes against
 the configured whitelist/gates and, for a recognized exchange step with a whitelisted station,
 composes the next reply and waits for any keypress (~2s window) to confirm — **dry run only**,
-it never opens CAT and never asserts PTT. A missed confirmation skips that opportunity and
-re-offers the same reply rather than sending late. Real keying is Phase 4, after
-`core/atropos.c`'s PTT watchdog exists.
+it never opens CAT and never asserts PTT.
+
+`--atropos-watchdog-test` is Phase 4's own kickoff-specified bench verification: asserts real
+PTT via CAT and deliberately never releases it, relying entirely on `core/atropos.c`'s
+watchdog to force it off automatically around 13.5s (an independent hard backstop in the test
+harness itself fires at 16s and reports failure if the watchdog doesn't). Requires a dummy
+load, not an antenna, and prompts for confirmation before ever asserting PTT.
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
 keying**) — none of them ever assert PTT, including the power/mode/AGC/preamp controls.
