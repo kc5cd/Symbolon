@@ -8,10 +8,10 @@ into a queryable dataset. Full design and rationale: `symbolon-kickoff-prompt.md
 **Status:** early development. Phase 0 (build skeleton) and Phase 1 (receive-only decode)
 are complete — `symbolon` captures audio, decodes FT8 over a 15 s slot, and prints results
 to the console. Phase 2 (CAT via Hamlib, TX message synthesis) is also done, deliberately
-**without keying** — `symbolon` can talk CAT to a real rig and synthesize FT8 audio to a
-file, but nothing in this codebase asserts PTT yet. That's Phase 4's job, after the PTT
-watchdog exists — see `symbolon-kickoff-prompt.md`'s phasing table and its "never key the
-antenna first" verification ordering.
+**without keying** — `symbolon` can talk CAT to a real rig (frequency, mode, preamp, AGC, TX
+power) and synthesize FT8 audio to a file, but nothing in this codebase asserts PTT yet.
+That's Phase 4's job, after the PTT watchdog exists — see `symbolon-kickoff-prompt.md`'s
+phasing table and its "never key the antenna first" verification ordering.
 
 Phase 1's decoder recovers roughly 50-70% of what WSJT-X decodes on the same audio, both
 offline (a ~30-file WAV regression corpus) and live (WSJT-X-recorded samples) — a known,
@@ -81,6 +81,7 @@ symbolon --cat-set-mode <mode>    # USB | LSB | DATA-U | DATA-L | CW (with --cat
 symbolon --cat-preamp <on|off>    # toggle the front-end preamp (with --cat-port)
 symbolon --cat-agc <setting>      # off | slow | fast | auto (with --cat-port)
 symbolon --cat-set-power <watts>  # TX power, rounded to the nearest 0.5W (with --cat-port)
+symbolon --cat-power-cal <port> <csv> # interactive: step 0.5W increments, log the rig's own display
 ```
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
@@ -96,7 +97,8 @@ ceiling). The *set* side is accurate — confirmed exact at full power (8W comma
 back) — but the printed readback at partial power settings doesn't track linearly with what
 was set, most likely real PA drive-curve behavior rather than a bug in this code. Don't treat
 that printed number as exact except at full power; check the rig's own display or a wattmeter
-for actual output at a given setting.
+for actual output at a given setting. `--cat-power-cal` builds a real commanded-vs-displayed
+table interactively at the bench; the resulting CSV is a local artifact, not committed here.
 
 The `ctest` suite includes a regression corpus (`corpus.aggregate`) that decodes ~30 real
 FT8 recordings from `third_party/ft8_lib/test/wav/` and checks aggregate recall against
