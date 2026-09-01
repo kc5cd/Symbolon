@@ -60,3 +60,35 @@ target_include_directories(ft8_lib_wave PUBLIC ft8_lib)
 
 # doctest (MIT) -- app/'s C++17 test framework. Header-only; tests/app only needs the
 # include path, added directly in tests/CMakeLists.txt.
+
+# Hamlib (LGPL-2.1), Windows only -- a trimmed, checksum-verified snapshot of the official
+# win64 release zip (no upstream git repo suitable for a submodule pin; see
+# hamlib-w64/VERSION.md for the exact version, checksum, and what was trimmed out). Linux
+# never vendors this -- hal/CMakeLists.txt finds a system Hamlib via pkg-config instead, per
+# the kickoff's "pkg-config on Linux, an imported target on Windows" split.
+if(WIN32)
+    set(HAMLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/hamlib-w64")
+
+    add_library(hamlib SHARED IMPORTED GLOBAL)
+    set_target_properties(hamlib PROPERTIES
+        IMPORTED_IMPLIB "${HAMLIB_ROOT}/lib/libhamlib.dll.a"
+        IMPORTED_LOCATION "${HAMLIB_ROOT}/bin/libhamlib-4.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${HAMLIB_ROOT}/include"
+    )
+
+    # libhamlib-4.dll's own runtime dependencies (confirmed via `objdump -p`, see
+    # VERSION.md) -- anything linking the `hamlib` target on Windows needs these sitting
+    # next to its executable, not just the import library at link time.
+    # libwinpthread-1.dll is deliberately NOT in this list even though libhamlib-4.dll
+    # depends on it (see VERSION.md) -- Hamlib's own build of that DLL is a different
+    # size/hash than the one this project's own executables already need from the MinGW
+    # toolchain, and since Windows searches an exe's own directory before PATH, copying it
+    # here would shadow the correct copy and break every exe in this directory, hamlib-using
+    # or not. Confirmed by an actual STATUS_DLL_NOT_FOUND failure, not a hypothetical --
+    # left off PATH resolution instead, same as this project's other MinGW runtime DLLs.
+    set(HAMLIB_RUNTIME_DLLS
+        "${HAMLIB_ROOT}/bin/libhamlib-4.dll"
+        "${HAMLIB_ROOT}/bin/libusb-1.0.dll"
+        CACHE INTERNAL "Hamlib runtime DLLs to copy next to any exe linking the hamlib target"
+    )
+endif()

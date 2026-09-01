@@ -32,9 +32,20 @@ if(WIN32)
     # runtime, but a few symbols (CoInitializeEx/CoUninitialize, PropVariantClear) still
     # need linking against these import libraries directly.
     target_link_libraries(sym_hal PRIVATE ole32 winmm)
+
+    # Hamlib -- vendored dev SDK, see third_party/hamlib-w64/VERSION.md. `hamlib` is the
+    # imported target third_party/CMakeLists.txt defines for it.
+    target_link_libraries(sym_hal PUBLIC hamlib)
 else()
     # ALSA backend, PC Linux.
     target_link_libraries(sym_hal PRIVATE asound)
+
+    # Hamlib -- system package on Linux, not vendored (see third_party/hamlib-w64/VERSION.md
+    # for why Windows differs). Unverified on this machine (no Linux box); first real proof
+    # is CI, same caveat as the linux-x64 presets themselves.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(HAMLIB REQUIRED IMPORTED_TARGET hamlib)
+    target_link_libraries(sym_hal PUBLIC PkgConfig::HAMLIB)
 endif()
 
 # hal_types.h reaches core/sym_types.h via a relative "../core/sym_types.h" include -- no

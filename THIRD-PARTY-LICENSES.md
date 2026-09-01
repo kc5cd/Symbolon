@@ -27,11 +27,21 @@ travel with the files themselves; nothing extra to do beyond this table.
 
 | Dependency | License | Source checked |
 |---|---|---|
-| [Hamlib](https://github.com/Hamlib/Hamlib) (`libhamlib`) | LGPL-2.1 | `COPYING.LIB` in the Hamlib repository |
+| [Hamlib](https://github.com/Hamlib/Hamlib) (`libhamlib`) | LGPL-2.1 | `COPYING.LIB` in the Hamlib repository, also kept verbatim as `third_party/hamlib-w64/COPYING.LIB.txt` |
 
 Hamlib's own CLI frontend programs (`rigctl`, `rotctl`, etc.) are separately licensed under
 GPL-2.0 (`COPYING` in that repository) — Symbolon never links or copies from that code, only
 from the library's public C API, so only LGPL-2.1 is actually relevant here.
+
+**Windows is the one exception to "linked, not vendored"** — no Hamlib dev SDK is available
+through any package manager this project already uses on Windows, so `third_party/hamlib-w64/`
+holds a trimmed, checksum-verified copy of Hamlib's own official prebuilt win64 release
+(headers, MinGW import library, and the unmodified runtime DLL — see
+`third_party/hamlib-w64/VERSION.md` for the exact version and what was left out). This is
+still the *unmodified* library binary, redistributed under LGPL-2.1's own terms (permitted
+so long as the library itself isn't modified and its license/copyright notice travels with
+it, both true here — `COPYING.LIB.txt` is vendored alongside it for exactly this reason).
+Linux still links a system-provided Hamlib via `pkg-config`, nothing vendored there.
 
 **Why LGPL-2.1 doesn't constrain the license choice above:** LGPL exists specifically to
 permit linking from software under a different license — its only real requirement is that
