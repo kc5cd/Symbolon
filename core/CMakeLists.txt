@@ -16,6 +16,8 @@ add_library(sym_core STATIC
     cerberus.c
     qso.h
     qso.c
+    atropos.h
+    atropos.c
     tx.h
     tx.c
 )

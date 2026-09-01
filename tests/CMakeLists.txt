@@ -65,6 +65,17 @@ target_include_directories(test_qso PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unit
 target_link_libraries(test_qso PRIVATE sym_core)
 add_test(NAME core.qso_sequence COMMAND test_qso)
 
+# test_atropos -- Phase 4's own test gate (kickoff's phasing table): "atropos.c watchdog
+# fires under a simulated stall -- as a unit test -- before it's ever verified on the air".
+# Drives a fake sym_host_t clock by hand, no real time/sleeping involved.
+add_executable(test_atropos
+    core/test_atropos.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_atropos PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_atropos PRIVATE sym_core)
+add_test(NAME core.atropos_watchdog COMMAND test_atropos)
+
 # test_hal -- Unity, same as test_core/test_ring. Exercises hal/cat_hamlib.c against
 # Hamlib's RIG_MODEL_DUMMY backend (in-process, no serial port, no real hardware, no
 # rigctld) -- this is Phase 2's own test gate per the kickoff's phasing table ("CAT
