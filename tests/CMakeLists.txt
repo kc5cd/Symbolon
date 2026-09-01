@@ -40,7 +40,10 @@ add_test(NAME app.smoke COMMAND test_app)
 # the number that matters. Revisit the 70% threshold if the decode algorithm improves.
 add_executable(test_corpus
     corpus/test_corpus.cpp
+    ${CMAKE_SOURCE_DIR}/app/wav_decode.h
+    ${CMAKE_SOURCE_DIR}/app/wav_decode.cpp
 )
+target_include_directories(test_corpus PRIVATE ${CMAKE_SOURCE_DIR}/app)
 target_link_libraries(test_corpus PRIVATE sym_core ft8_lib_wave)
 
 set(SYM_CORPUS_DIR "${CMAKE_SOURCE_DIR}/third_party/ft8_lib/test/wav")

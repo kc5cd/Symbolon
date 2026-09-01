@@ -18,10 +18,7 @@
 #include <string>
 #include <vector>
 
-extern "C" {
-#include "argus.h"
-#include <common/wave.h>
-}
+#include "wav_decode.h"
 
 namespace fs = std::filesystem;
 
@@ -61,48 +58,14 @@ std::set<std::string> parse_expected_texts(const std::string& txt_path)
     return texts;
 }
 
-std::set<std::string> decode_wav(const std::string& wav_path)
-{
-    const int kCapacity = 20 * 12000; // 20s @ 12kHz -- comfortably more than one FT8 slot
-    std::vector<float> signal(kCapacity);
-    int num_samples = kCapacity;
-    int sample_rate = 0;
-    if (load_wav(signal.data(), &num_samples, &sample_rate, wav_path.c_str()) != 0) {
-        std::cerr << "load_wav failed for " << wav_path << "\n";
-        return {};
-    }
-
-    argus_config_t cfg{};
-    cfg.f_min_hz = 200.0f;
-    cfg.f_max_hz = 3000.0f;
-    cfg.sample_rate_hz = sample_rate;
-    cfg.time_osr = 2;
-    cfg.freq_osr = 2;
-
-    argus_t argus;
-    argus_init(&argus, &cfg);
-
-    int block_size = argus_block_size(&argus);
-    for (int pos = 0; pos + block_size <= num_samples; pos += block_size) {
-        argus_process_block(&argus, signal.data() + pos);
-    }
-
-    argus_decode_t decodes[256];
-    int num_decoded = argus_decode_slot(&argus, decodes, 256);
-    argus_free(&argus);
-
-    std::set<std::string> actual;
-    for (int i = 0; i < num_decoded; ++i) {
-        actual.insert(std::string(decodes[i].text));
-    }
-    return actual;
-}
-
 // Evaluates one file, prints a summary line, and returns (expected_count, found_count).
 std::pair<size_t, size_t> evaluate_file(const std::string& wav_path, const std::string& txt_path)
 {
     std::set<std::string> expected = parse_expected_texts(txt_path);
-    std::set<std::string> actual = decode_wav(wav_path);
+    std::set<std::string> actual;
+    for (const auto& d : decode_wav_file(wav_path)) {
+        actual.insert(d.text);
+    }
 
     size_t found = 0;
     std::vector<std::string> missing;
