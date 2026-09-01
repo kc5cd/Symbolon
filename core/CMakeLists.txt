@@ -8,6 +8,8 @@ add_library(sym_core STATIC
     api.c
     horae.h
     horae.c
+    ring.h
+    ring.c
 )
 
 target_include_directories(sym_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
