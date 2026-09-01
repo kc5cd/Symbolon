@@ -5,9 +5,12 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <regex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "wav_decode.h"
 
 extern "C" {
 #include "argus.h"
@@ -50,21 +53,93 @@ std::string find_default_capture_device_name()
     return (device_count > 0) ? devices[0].name : "(none found)";
 }
 
+void print_decode_line(int hour, int min, int sec, const std::string& text, float freq_hz, float time_s, int score)
+{
+    // score*0.5 is ft8_lib's own rough SNR stand-in (see demo/decode_ft8.c) -- no real SNR
+    // estimate exists yet, see .claude/state/context.md.
+    std::printf("%02d%02d%02d %+05.1f %+4.2f %4.0f ~  %s\n",
+        hour, min, sec, (double)(score * 0.5f), (double)time_s, (double)freq_hz, text.c_str());
+}
+
+int list_devices()
+{
+    hal_audio_device_t devices[32];
+    size_t device_count = 0;
+    hal_audio_enumerate(false, devices, 32, &device_count);
+    for (size_t i = 0; i < device_count; ++i) {
+        std::cout << (devices[i].is_default ? "* " : "  ") << devices[i].name << "\n";
+    }
+    if (device_count == 0) {
+        std::cerr << "No capture devices found.\n";
+    }
+    return 0;
+}
+
+// Best-effort: WSJT-X's own saved-audio files and the ft8_lib WAV corpus both name files
+// ..._HHMMSS.wav (or start with it) -- pull that out for a readable slot-time column when
+// decoding a file rather than listening live. Falls back to all-question-marks rather than
+// guessing if the filename doesn't match.
+std::string guess_hhmmss_from_filename(const std::string& wav_path)
+{
+    std::smatch m;
+    static const std::regex kPattern(R"((\d{6})\.wav$)", std::regex::icase);
+    if (std::regex_search(wav_path, m, kPattern)) {
+        return m[1].str();
+    }
+    return "??????";
+}
+
+int decode_wav_mode(const std::string& wav_path)
+{
+    std::string hhmmss = guess_hhmmss_from_filename(wav_path);
+    int hour = 0, min = 0, sec = 0;
+    if (hhmmss != "??????") {
+        hour = std::stoi(hhmmss.substr(0, 2));
+        min = std::stoi(hhmmss.substr(2, 2));
+        sec = std::stoi(hhmmss.substr(4, 2));
+    }
+
+    std::vector<WavDecode> decodes = decode_wav_file(wav_path);
+    for (const auto& d : decodes) {
+        print_decode_line(hour, min, sec, d.text, d.freq_hz, d.time_s, d.score);
+    }
+    std::cout << decodes.size() << " decode(s) from " << wav_path << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
+    std::string decode_wav_path;
+    std::string device_name;
+
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
             std::cout << "symbolon " << kVersion << "\n";
             return 0;
         }
+        if (std::strcmp(argv[i], "--list-devices") == 0) {
+            return list_devices();
+        }
+        if (std::strcmp(argv[i], "--decode-wav") == 0 && i + 1 < argc) {
+            decode_wav_path = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
+            device_name = argv[++i];
+            continue;
+        }
+    }
+
+    if (!decode_wav_path.empty()) {
+        return decode_wav_mode(decode_wav_path);
     }
 
     std::signal(SIGINT, on_sigint);
 
-    std::string default_name = find_default_capture_device_name();
-    std::cout << "symbolon " << kVersion << " -- capture device: " << default_name << "\n";
+    std::string capture_name = device_name.empty() ? find_default_capture_device_name() : device_name;
+    std::cout << "symbolon " << kVersion << " -- capture device: " << capture_name << "\n";
 
     const uint32_t kSampleRate = 12000;
     const size_t kRingCapacity = (size_t)kSampleRate * 5; // 5s headroom between decode-loop polls
@@ -74,6 +149,7 @@ int main(int argc, char** argv)
 
     hal_audio_config_t audio_cfg{};
     audio_cfg.sample_rate_hz = kSampleRate;
+    audio_cfg.capture_device = device_name.empty() ? nullptr : device_name.c_str();
 
     hal_audio_t* audio = nullptr;
     if (hal_audio_open(&audio, &audio_cfg, capture_callback, nullptr, &ring) != SYM_RC_OK) {
@@ -118,12 +194,8 @@ int main(int argc, char** argv)
                 // C++ mode, and this loop has no concurrent caller to race against.
                 struct tm tm_slot = *std::gmtime(&slot_time);
                 for (int i = 0; i < n; ++i) {
-                    // score*0.5 is ft8_lib's own rough SNR stand-in (see demo/decode_ft8.c)
-                    // -- no real SNR estimate exists yet, see .claude/state/context.md.
-                    std::printf("%02d%02d%02d %+05.1f %+4.2f %4.0f ~  %s\n",
-                        tm_slot.tm_hour, tm_slot.tm_min, tm_slot.tm_sec,
-                        (double)(decodes[i].score * 0.5f), (double)decodes[i].time_s,
-                        (double)decodes[i].freq_hz, decodes[i].text);
+                    print_decode_line(tm_slot.tm_hour, tm_slot.tm_min, tm_slot.tm_sec,
+                        decodes[i].text, decodes[i].freq_hz, decodes[i].time_s, decodes[i].score);
                 }
             }
             argus_reset(&argus);
