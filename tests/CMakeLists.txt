@@ -87,11 +87,18 @@ if(WIN32)
 endif()
 
 # test_app -- doctest (MIT), header-only. app/'s test framework; used only for app-layer
-# (C++17) logic.
+# (C++17) logic. test_smoke.cpp owns main() (DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN); test_config.cpp
+# adds cases into the same executable/registry, same pattern doctest itself expects.
 add_executable(test_app
     app/test_smoke.cpp
+    app/test_config.cpp
+    ${CMAKE_SOURCE_DIR}/app/config.h
+    ${CMAKE_SOURCE_DIR}/app/config.cpp
 )
-target_include_directories(test_app PRIVATE ${CMAKE_SOURCE_DIR}/third_party/doctest/doctest)
+target_include_directories(test_app PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/doctest/doctest
+    ${CMAKE_SOURCE_DIR}/app
+)
 target_link_libraries(test_app PRIVATE sym_core)
 add_test(NAME app.smoke COMMAND test_app)
 

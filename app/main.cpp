@@ -8,19 +8,23 @@
 #include <fstream>
 #include <iostream>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "config.h"
 #include "wav_decode.h"
 
 extern "C" {
 #include "argus.h"
+#include "cerberus.h"
 #include "hal_audio.h"
 #include "hal_cat.h"
 #include "hal_time.h"
 #include "horae.h"
+#include "qso.h"
 #include "ring.h"
 #include "sym_types.h"
 #include "tx.h"
@@ -358,6 +362,118 @@ int cat_power_cal_mode(const std::string& port, const std::string& csv_path)
     return 0;
 }
 
+// CLI overrides for the whitelist/gates config -- collected separately from SymbolonConfig
+// itself so "was this flag actually passed" is unambiguous (an empty std::string/unset float
+// can't be distinguished from "the user passed an empty value" otherwise). Applied on top of
+// whatever --config's INI file already populated, per config.h's own documented order: CLI
+// always wins. --legacy-mode is deliberately not documented here or in the README -- see
+// core/cerberus.h's own note on cerberus_config_t.beacon_allow_token_alone and
+// .claude/state/context.md's Phase 3 entry on why (Part 97 station-identification default).
+struct ConfigOptions {
+    std::string config_path;
+    std::string beacon_token_path;
+    std::string my_call;
+    std::string my_grid;
+    std::string whitelist_csv;
+    std::string band;
+    double freq_min_hz = -1.0; // <0 = not set
+    double freq_max_hz = -1.0;
+    bool has_min_snr = false;
+    double min_snr_db = 0.0;
+    bool legacy_mode = false; // undocumented: beacon_allow_token_alone
+};
+
+// Builds the effective SymbolonConfig from --config's INI file (if given) with CLI overrides
+// applied on top, per config.h's documented order. Shared by --dump-config and (once built)
+// the confirm-mode loop, so both see identical effective settings.
+SymbolonConfig build_effective_config(const ConfigOptions& opts)
+{
+    SymbolonConfig cfg{};
+    if (!opts.config_path.empty()) {
+        if (!load_config_file(opts.config_path, cfg)) {
+            std::cerr << "Warning: couldn't open config file " << opts.config_path << "\n";
+        }
+    }
+    if (!opts.beacon_token_path.empty()) {
+        if (!load_beacon_token_file(opts.beacon_token_path, cfg.cerberus)) {
+            std::cerr << "Warning: couldn't open beacon token file " << opts.beacon_token_path << "\n";
+        }
+    }
+
+    if (!opts.my_call.empty()) {
+        std::strncpy(cfg.cerberus.my_call, opts.my_call.c_str(), sizeof(cfg.cerberus.my_call) - 1);
+        std::strncpy(cfg.qso.my_call, opts.my_call.c_str(), sizeof(cfg.qso.my_call) - 1);
+    }
+    if (!opts.my_grid.empty()) {
+        std::strncpy(cfg.qso.my_grid, opts.my_grid.c_str(), sizeof(cfg.qso.my_grid) - 1);
+    }
+    if (!opts.whitelist_csv.empty()) {
+        cfg.cerberus.whitelist_count = 0;
+        std::stringstream ss(opts.whitelist_csv);
+        std::string item;
+        while (std::getline(ss, item, ',') && cfg.cerberus.whitelist_count < CERBERUS_MAX_WHITELIST) {
+            // trim
+            size_t start = item.find_first_not_of(" \t");
+            size_t end = item.find_last_not_of(" \t");
+            if (start == std::string::npos) {
+                continue;
+            }
+            std::string call = item.substr(start, end - start + 1);
+            std::strncpy(cfg.cerberus.whitelist[cfg.cerberus.whitelist_count], call.c_str(),
+                sizeof(cfg.cerberus.whitelist[0]) - 1);
+            ++cfg.cerberus.whitelist_count;
+        }
+    }
+    if (!opts.band.empty()) {
+        cfg.cerberus.has_band_gate = true;
+        std::strncpy(cfg.cerberus.band, opts.band.c_str(), sizeof(cfg.cerberus.band) - 1);
+    }
+    if (opts.freq_min_hz >= 0.0 && opts.freq_max_hz >= 0.0) {
+        cfg.cerberus.has_freq_gate = true;
+        cfg.cerberus.freq_min_hz = (float)opts.freq_min_hz;
+        cfg.cerberus.freq_max_hz = (float)opts.freq_max_hz;
+    }
+    if (opts.has_min_snr) {
+        cfg.cerberus.has_snr_gate = true;
+        cfg.cerberus.min_snr_db = (float)opts.min_snr_db;
+    }
+    cfg.cerberus.beacon_allow_token_alone = opts.legacy_mode;
+
+    return cfg;
+}
+
+// Verifies the config plumbing end-to-end through the real binary, not just the doctest unit
+// tests -- matches the project's own "compiles and the unit test passes is not the same claim
+// as the shipped binary actually uses it" lesson from Phase 2 (see context.md). Deliberately
+// never prints the beacon token's literal value (just whether one is configured) or anything
+// about --legacy-mode -- this output is the kind of thing that ends up pasted into a bug
+// report.
+int dump_config_mode(const ConfigOptions& opts)
+{
+    SymbolonConfig cfg = build_effective_config(opts);
+
+    std::cout << "my_call: " << (cfg.cerberus.my_call[0] ? cfg.cerberus.my_call : "(not set)") << "\n";
+    std::cout << "my_grid: " << (cfg.qso.my_grid[0] ? cfg.qso.my_grid : "(not set)") << "\n";
+    std::cout << "whitelist (" << cfg.cerberus.whitelist_count << "):";
+    for (int i = 0; i < cfg.cerberus.whitelist_count; ++i) {
+        std::cout << " " << cfg.cerberus.whitelist[i];
+    }
+    std::cout << "\n";
+    std::cout << "beacon token: " << (cfg.cerberus.beacon_token[0] ? "configured" : "not configured") << "\n";
+    std::cout << "band gate: " << (cfg.cerberus.has_band_gate ? cfg.cerberus.band : "(disabled)") << "\n";
+    if (cfg.cerberus.has_freq_gate) {
+        std::cout << "freq gate: " << cfg.cerberus.freq_min_hz << "-" << cfg.cerberus.freq_max_hz << " Hz\n";
+    } else {
+        std::cout << "freq gate: (disabled)\n";
+    }
+    if (cfg.cerberus.has_snr_gate) {
+        std::cout << "min SNR gate: " << cfg.cerberus.min_snr_db << " dB\n";
+    } else {
+        std::cout << "min SNR gate: (disabled)\n";
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -370,6 +486,8 @@ int main(int argc, char** argv)
     CatOptions cat_opts;
     std::string cat_power_cal_port;
     std::string cat_power_cal_csv;
+    ConfigOptions config_opts;
+    bool dump_config = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -426,8 +544,56 @@ int main(int argc, char** argv)
             cat_power_cal_csv = argv[++i];
             continue;
         }
+        if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            config_opts.config_path = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--beacon-token-file") == 0 && i + 1 < argc) {
+            config_opts.beacon_token_path = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--my-call") == 0 && i + 1 < argc) {
+            config_opts.my_call = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--my-grid") == 0 && i + 1 < argc) {
+            config_opts.my_grid = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--whitelist") == 0 && i + 1 < argc) {
+            config_opts.whitelist_csv = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--band") == 0 && i + 1 < argc) {
+            config_opts.band = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--freq-min") == 0 && i + 1 < argc) {
+            config_opts.freq_min_hz = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--freq-max") == 0 && i + 1 < argc) {
+            config_opts.freq_max_hz = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--min-snr") == 0 && i + 1 < argc) {
+            config_opts.has_min_snr = true;
+            config_opts.min_snr_db = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--legacy-mode") == 0) {
+            config_opts.legacy_mode = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--dump-config") == 0) {
+            dump_config = true;
+            continue;
+        }
     }
 
+    if (dump_config) {
+        return dump_config_mode(config_opts);
+    }
     if (!decode_wav_path.empty()) {
         return decode_wav_mode(decode_wav_path);
     }

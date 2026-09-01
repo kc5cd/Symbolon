@@ -3,6 +3,8 @@ add_executable(symbolon
     main.cpp
     wav_decode.h
     wav_decode.cpp
+    config.h
+    config.cpp
 )
 
 target_link_libraries(symbolon PRIVATE sym_core sym_hal ft8_lib_wave)
