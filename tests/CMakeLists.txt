@@ -31,6 +31,19 @@ target_include_directories(test_tx PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity
 target_link_libraries(test_tx PRIVATE sym_core)
 add_test(NAME core.tx_roundtrip COMMAND test_tx)
 
+# test_argus_snr -- Phase 3 prep, not part of Phase 2's own gate: argus_decode_t grew
+# call_to/call_de/extra and snr_db fields cerberus.c's match engine needs. Verifies the SNR
+# estimate against known-power injected Gaussian noise (not just "a number came out") and
+# checks the structured-field fallback shape (empty for free text, populated for standard
+# messages) -- see core/argus.c's argus_estimate_snr_db() for the method.
+add_executable(test_argus_snr
+    core/test_argus_snr.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_argus_snr PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_argus_snr PRIVATE sym_core)
+add_test(NAME core.argus_snr COMMAND test_argus_snr)
+
 # test_hal -- Unity, same as test_core/test_ring. Exercises hal/cat_hamlib.c against
 # Hamlib's RIG_MODEL_DUMMY backend (in-process, no serial port, no real hardware, no
 # rigctld) -- this is Phase 2's own test gate per the kickoff's phasing table ("CAT
