@@ -46,6 +46,13 @@ hal_rc_t hal_cat_get_freq_hz(hal_cat_t* cat, uint64_t* out_hz);
 hal_rc_t hal_cat_set_mode(hal_cat_t* cat, hal_cat_mode_t mode);
 hal_rc_t hal_cat_get_mode(hal_cat_t* cat, hal_cat_mode_t* out_mode);
 
+/* On/off, not a dB value -- the X6200 (like most rigs Hamlib exposes RIG_LEVEL_PREAMP for)
+   has a single preamp stage. hal_cat_set_preamp(true) uses the rig's own first advertised
+   preamp gain (rig->state.preamp[0], populated by Hamlib from the backend's rig_caps at
+   rig_open()); (false) sets 0 dB (off). */
+hal_rc_t hal_cat_set_preamp(hal_cat_t* cat, bool enable);
+hal_rc_t hal_cat_get_preamp(hal_cat_t* cat, bool* out_enabled);
+
 /* atropos.c's watchdog is the one caller that must be able to reach this through
    sym_host_t.ptt_set without going through Hamlib's normal request path -- see
    core/sym_types.h. This function is what app/ wires that callback to. */

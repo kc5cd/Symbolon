@@ -78,11 +78,12 @@ symbolon --tx-freq <hz>           # audio frequency for --tx-test (default 1500 
 symbolon --cat-port <port>        # open CAT via Hamlib, apply any settings below, print status
 symbolon --cat-set-freq <hz>      # set VFO frequency (with --cat-port)
 symbolon --cat-set-mode <mode>    # USB | LSB | DATA-U | DATA-L | CW (with --cat-port)
+symbolon --cat-preamp <on|off>    # toggle the front-end preamp (with --cat-port)
 ```
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
-keying**) — none of them ever assert PTT, including a frequency or mode change. Round-trip a
-synthesized message through the decoder as a sanity check:
+keying**) — none of them ever assert PTT, including a frequency, mode, or preamp change.
+Round-trip a synthesized message through the decoder as a sanity check:
 `symbolon --tx-test "CQ KC5CD EM12" out.wav && symbolon --decode-wav out.wav`.
 
 The `ctest` suite includes a regression corpus (`corpus.aggregate`) that decodes ~30 real

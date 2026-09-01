@@ -66,6 +66,22 @@ static void test_data_l_mode_roundtrip(void)
     hal_cat_close(cat);
 }
 
+static void test_preamp_roundtrip(void)
+{
+    hal_cat_t* cat = open_dummy();
+
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_set_preamp(cat, true));
+    bool enabled = false;
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_get_preamp(cat, &enabled));
+    TEST_ASSERT_TRUE(enabled);
+
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_set_preamp(cat, false));
+    TEST_ASSERT_EQUAL_INT(HAL_RC_OK, hal_cat_get_preamp(cat, &enabled));
+    TEST_ASSERT_FALSE(enabled);
+
+    hal_cat_close(cat);
+}
+
 static void test_ptt_roundtrip(void)
 {
     hal_cat_t* cat = open_dummy();
@@ -92,6 +108,7 @@ int main(void)
     RUN_TEST(test_freq_roundtrip);
     RUN_TEST(test_mode_roundtrip);
     RUN_TEST(test_data_l_mode_roundtrip);
+    RUN_TEST(test_preamp_roundtrip);
     RUN_TEST(test_ptt_roundtrip);
     return UNITY_END();
 }

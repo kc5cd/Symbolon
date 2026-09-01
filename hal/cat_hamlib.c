@@ -184,6 +184,34 @@ hal_rc_t hal_cat_get_mode(hal_cat_t* cat_handle, hal_cat_mode_t* out_mode)
     return HAL_RC_OK;
 }
 
+hal_rc_t hal_cat_set_preamp(hal_cat_t* cat_handle, bool enable)
+{
+    struct hal_cat* cat = (struct hal_cat*)cat_handle;
+    if (cat == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+    value_t val;
+    val.i = enable ? cat->rig->state.preamp[0] : 0;
+    int rc = rig_set_level(cat->rig, RIG_VFO_CURR, RIG_LEVEL_PREAMP, val);
+    return (rc == RIG_OK) ? HAL_RC_OK : record_hamlib_error(cat, "rig_set_level(PREAMP)", rc);
+}
+
+hal_rc_t hal_cat_get_preamp(hal_cat_t* cat_handle, bool* out_enabled)
+{
+    struct hal_cat* cat = (struct hal_cat*)cat_handle;
+    if (cat == NULL || out_enabled == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+    value_t val;
+    int rc = rig_get_level(cat->rig, RIG_VFO_CURR, RIG_LEVEL_PREAMP, &val);
+    if (rc != RIG_OK) {
+        *out_enabled = false;
+        return record_hamlib_error(cat, "rig_get_level(PREAMP)", rc);
+    }
+    *out_enabled = (val.i != 0);
+    return HAL_RC_OK;
+}
+
 hal_rc_t hal_cat_set_ptt(hal_cat_t* cat_handle, bool assert_tx)
 {
     struct hal_cat* cat = (struct hal_cat*)cat_handle;

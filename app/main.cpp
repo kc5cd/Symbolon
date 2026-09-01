@@ -158,13 +158,14 @@ struct CatOptions {
     std::string port;
     double set_freq_hz = 0.0;
     std::string set_mode; // empty = don't set
+    int set_preamp = -1;  // -1 = don't set, 0 = off, 1 = on
 };
 
 // Phase 2, no keying: opens real CAT via Hamlib, applies any requested settings (frequency,
-// mode -- neither is PTT, no RF is emitted by either), then prints the rig's current status.
-// hal_cat_set_ptt() exists and works (see tests/hal/test_cat_hamlib.c against
-// RIG_MODEL_DUMMY), but nothing in this CLI calls it; per the kickoff's "never key the
-// antenna first" ordering, that's Phase 4's job, after core/atropos.c's watchdog exists.
+// mode, preamp -- none of these are PTT, no RF is emitted by any of them), then prints the
+// rig's current status. hal_cat_set_ptt() exists and works (see tests/hal/test_cat_hamlib.c
+// against RIG_MODEL_DUMMY), but nothing in this CLI calls it; per the kickoff's "never key
+// the antenna first" ordering, that's Phase 4's job, after core/atropos.c's watchdog exists.
 int cat_info_mode(const CatOptions& opts)
 {
     hal_cat_config_t cfg{};
@@ -200,6 +201,14 @@ int cat_info_mode(const CatOptions& opts)
         }
     }
 
+    if (opts.set_preamp != -1) {
+        if (hal_cat_set_preamp(cat, opts.set_preamp != 0) != HAL_RC_OK) {
+            std::cerr << "Failed to set preamp: " << hal_cat_last_error(cat) << "\n";
+            hal_cat_close(cat);
+            return 1;
+        }
+    }
+
     uint64_t freq_hz = 0;
     if (hal_cat_get_freq_hz(cat, &freq_hz) == HAL_RC_OK) {
         std::cout << "Frequency: " << freq_hz << " Hz\n";
@@ -212,6 +221,13 @@ int cat_info_mode(const CatOptions& opts)
         std::cout << "Mode: " << cat_mode_name(mode) << "\n";
     } else {
         std::cerr << "Failed to read mode: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    bool preamp_enabled = false;
+    if (hal_cat_get_preamp(cat, &preamp_enabled) == HAL_RC_OK) {
+        std::cout << "Preamp: " << (preamp_enabled ? "on" : "off") << "\n";
+    } else {
+        std::cerr << "Failed to read preamp: " << hal_cat_last_error(cat) << "\n";
     }
 
     hal_cat_close(cat);
@@ -264,6 +280,11 @@ int main(int argc, char** argv)
         }
         if (std::strcmp(argv[i], "--cat-set-mode") == 0 && i + 1 < argc) {
             cat_opts.set_mode = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--cat-preamp") == 0 && i + 1 < argc) {
+            std::string v = argv[++i];
+            cat_opts.set_preamp = (v == "on") ? 1 : 0;
             continue;
         }
     }
