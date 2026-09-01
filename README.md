@@ -7,7 +7,11 @@ into a queryable dataset. Full design and rationale: `symbolon-kickoff-prompt.md
 
 **Status:** early development. Phase 0 (build skeleton) and Phase 1 (receive-only decode)
 are complete — `symbolon` captures audio, decodes FT8 over a 15 s slot, and prints results
-to the console. Not yet capable of transmitting.
+to the console. Phase 2 (CAT via Hamlib, TX message synthesis) is also done, deliberately
+**without keying** — `symbolon` can talk CAT to a real rig and synthesize FT8 audio to a
+file, but nothing in this codebase asserts PTT yet. That's Phase 4's job, after the PTT
+watchdog exists — see `symbolon-kickoff-prompt.md`'s phasing table and its "never key the
+antenna first" verification ordering.
 
 Phase 1's decoder recovers roughly 50-70% of what WSJT-X decodes on the same audio, both
 offline (a ~30-file WAV regression corpus) and live (WSJT-X-recorded samples) — a known,
@@ -69,7 +73,14 @@ symbolon                          # live capture on the default audio device
 symbolon --list-devices           # show available capture devices
 symbolon --device "<name>"        # capture on a specific device instead of the default
 symbolon --decode-wav <path>      # decode one WAV file and print results, no device needed
+symbolon --tx-test "<text>" <wav> # synthesize an FT8 message to a WAV file, no radio touched
+symbolon --tx-freq <hz>           # audio frequency for --tx-test (default 1500 Hz)
+symbolon --cat-port <port>        # open CAT via Hamlib and print the rig's freq/mode (read-only)
 ```
+
+`--tx-test` and `--cat-port` are Phase 2 (CAT + TX synthesis, **no keying**) — neither one
+ever asserts PTT. Round-trip a synthesized message through the decoder as a sanity check:
+`symbolon --tx-test "CQ KC5CD EM12" out.wav && symbolon --decode-wav out.wav`.
 
 The `ctest` suite includes a regression corpus (`corpus.aggregate`) that decodes ~30 real
 FT8 recordings from `third_party/ft8_lib/test/wav/` and checks aggregate recall against
