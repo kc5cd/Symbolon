@@ -14,6 +14,21 @@
 #include <utility>
 #include <vector>
 
+// Non-blocking keyboard polling for confirm mode's ~2s reply-confirmation window. Deliberately
+// app/-local #ifdef rather than a formal hal/ seam: confirm mode's keyboard concept is PC-CLI
+// only (app/ never compiles for a future radio target, which would use a touchscreen/buttons
+// instead anyway) -- see .claude/state/context.md's Phase 3 entry for why this was asked and
+// decided rather than just matching hal_audio/hal_cat/hal_time's existing per-platform-file
+// pattern. The POSIX path is written blind, like the rest of this project's POSIX code -- no
+// Linux box exists on this dev machine, first real proof is CI.
+#ifdef _WIN32
+#include <conio.h>
+#else
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+#endif
+
 #include "config.h"
 #include "wav_decode.h"
 
@@ -44,6 +59,46 @@ void on_sigint(int)
 {
     g_stop = true;
 }
+
+#ifdef _WIN32
+void enable_raw_keyboard_mode() { }
+void restore_keyboard_mode() { }
+
+// Non-blocking: true iff a key was pressed since the last check (and consumes it).
+bool key_was_pressed()
+{
+    if (_kbhit()) {
+        (void)_getch();
+        return true;
+    }
+    return false;
+}
+#else
+termios g_saved_termios{};
+
+void enable_raw_keyboard_mode()
+{
+    tcgetattr(STDIN_FILENO, &g_saved_termios);
+    termios raw = g_saved_termios;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+}
+
+void restore_keyboard_mode()
+{
+    tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_termios);
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+bool key_was_pressed()
+{
+    int ch = getchar();
+    return ch != EOF;
+}
+#endif
 
 // Runs on miniaudio's realtime capture thread (hal/audio_miniaudio.c) -- must not block,
 // allocate, or do I/O, per hal_audio.h's own contract. Handing samples to the ring is the
@@ -474,6 +529,170 @@ int dump_config_mode(const ConfigOptions& opts)
     return 0;
 }
 
+// Phase 3: confirm mode. Same capture/slot/decode loop as the default listening mode below,
+// with every decode also run through cerberus_evaluate() and fed into the qso.c state
+// machine; when a reply is composed, the operator confirms with any keypress within a short
+// window before the next slot begins (kickoff: "the window between decodes landing and the
+// next slot opening is short (~2 s)... a missed confirmation must skip the slot and re-offer,
+// never transmit late"). Duplicates rather than shares the default mode's loop body -- kept
+// separate (matching this file's existing one-function-per-mode pattern) rather than risking
+// a shared-loop refactor of the already-working default path for what's currently a single
+// new caller.
+//
+// Deliberately never opens CAT and never calls hal_cat_set_ptt() anywhere -- per
+// .claude/CLAUDE.md's "never key the antenna first" ordering, this composes and displays what
+// WOULD be sent and nothing more; actual keying is Phase 4's job, after core/atropos.c's PTT
+// watchdog exists. current_band is a plain operator-supplied string (no CAT connection exists
+// in this mode to read it automatically) -- pass "" to leave any configured band gate always
+// failing closed rather than silently trusting an unverified value.
+int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, const std::string& current_band)
+{
+    if (cfg.cerberus.my_call[0] == '\0' || cfg.cerberus.whitelist_count == 0) {
+        std::cerr << "Confirm mode needs --my-call and a non-empty whitelist (via --config and/or --whitelist).\n";
+        return 1;
+    }
+
+    std::signal(SIGINT, on_sigint);
+    enable_raw_keyboard_mode();
+
+    std::string capture_name = device_name.empty() ? find_default_capture_device_name() : device_name;
+    std::cout << "symbolon " << kVersion << " -- confirm mode -- capture device: " << capture_name << "\n";
+    std::cout << "My call: " << cfg.cerberus.my_call << "  Whitelist:";
+    for (int i = 0; i < cfg.cerberus.whitelist_count; ++i) {
+        std::cout << " " << cfg.cerberus.whitelist[i];
+    }
+    std::cout << "\n\n*** DRY RUN ONLY -- no CAT is opened, no PTT is ever asserted here. Nothing is\n"
+                 "    actually transmitted; this only composes and displays replies. ***\n\n";
+
+    const uint32_t kSampleRate = 12000;
+    const size_t kRingCapacity = (size_t)kSampleRate * 5; // 5s headroom -- comfortably covers
+        // the ~2s confirm-window pause below, during which the outer loop isn't draining the
+        // ring (the capture thread keeps writing into it regardless).
+    std::vector<float> ring_backing(kRingCapacity);
+    sym_ring_t ring;
+    sym_ring_init(&ring, ring_backing.data(), kRingCapacity);
+
+    hal_audio_config_t audio_cfg{};
+    audio_cfg.sample_rate_hz = kSampleRate;
+    audio_cfg.capture_device = device_name.empty() ? nullptr : device_name.c_str();
+
+    hal_audio_t* audio = nullptr;
+    if (hal_audio_open(&audio, &audio_cfg, capture_callback, nullptr, &ring) != SYM_RC_OK) {
+        std::cerr << "Failed to open capture device: " << hal_audio_last_error(audio) << "\n";
+        restore_keyboard_mode();
+        return 1;
+    }
+    if (hal_audio_start(audio) != SYM_RC_OK) {
+        std::cerr << "Failed to start capture: " << hal_audio_last_error(audio) << "\n";
+        hal_audio_close(audio);
+        restore_keyboard_mode();
+        return 1;
+    }
+
+    argus_config_t argus_cfg{};
+    argus_cfg.f_min_hz = 200.0f;
+    argus_cfg.f_max_hz = 3000.0f;
+    argus_cfg.sample_rate_hz = (int)kSampleRate;
+    argus_cfg.time_osr = 2;
+    argus_cfg.freq_osr = 2;
+
+    argus_t argus;
+    argus_init(&argus, &argus_cfg);
+
+    const int block_size = argus_block_size(&argus);
+    std::vector<float> block_buf((size_t)block_size);
+
+    qso_t qso;
+    qso_init(&qso);
+
+    const uint64_t kConfirmWindowUs = 2ULL * 1000000ULL; // ~2s, per the kickoff
+
+    uint64_t current_slot_epoch_us = 0;
+    bool slot_started = false;
+
+    std::cout << "Listening... (Ctrl+C to stop)\n";
+
+    while (!g_stop) {
+        uint64_t utc_us = hal_time_utc_us();
+        horae_slot_t slot = horae_slot_at(utc_us);
+
+        if (!slot_started || slot.slot_epoch_us != current_slot_epoch_us) {
+            if (slot_started) {
+                argus_decode_t decodes[64];
+                int n = argus_decode_slot(&argus, decodes, 64);
+                time_t slot_time = (time_t)(current_slot_epoch_us / 1000000ULL);
+                struct tm tm_slot = *std::gmtime(&slot_time);
+
+                for (int i = 0; i < n; ++i) {
+                    print_decode_line(tm_slot.tm_hour, tm_slot.tm_min, tm_slot.tm_sec,
+                        decodes[i].text, decodes[i].freq_hz, decodes[i].time_s, decodes[i].score);
+
+                    const char* band_arg = current_band.empty() ? nullptr : current_band.c_str();
+                    cerberus_result_t match = cerberus_evaluate(&cfg.cerberus, &decodes[i], band_arg);
+
+                    if (match.matched) {
+                        std::cout << "  -> matched (" << (match.is_beacon_token ? "beacon token" : "exchange") << ")\n";
+                        qso_on_decode(&qso, &cfg.qso, &decodes[i]);
+                    } else if (qso.step == QSO_STEP_IDLE) {
+                        // cerberus_evaluate() deliberately rejects every CQ (see cerberus.h) --
+                        // this is qso.c's own separate, QSO-state-aware check for the one
+                        // that starts a new exchange.
+                        qso_on_cq_heard(&qso, &cfg.qso, &cfg.cerberus, &decodes[i]);
+                    }
+                }
+
+                if (qso.step == QSO_STEP_PENDING_CONFIRM) {
+                    std::cout << "\n>>> Pending reply: \"" << qso.pending_text
+                               << "\" -- press any key within ~2s to confirm (dry run) <<<\n";
+                    uint64_t deadline = hal_time_mono_us() + kConfirmWindowUs;
+                    bool confirmed = false;
+                    while (hal_time_mono_us() < deadline) {
+                        if (key_was_pressed()) {
+                            confirmed = true;
+                            break;
+                        }
+                        hal_time_sleep_us(20000);
+                    }
+                    if (confirmed) {
+                        qso_confirm_sent(&qso);
+                        std::cout << "Confirmed (dry run -- nothing was actually transmitted).\n";
+                    } else {
+                        qso_confirm_missed(&qso);
+                        std::cout << "Missed the confirm window -- will re-offer at the next opportunity.\n";
+                    }
+                }
+
+                if (qso.step == QSO_STEP_COMPLETE) {
+                    std::cout << "\n=== QSO complete with " << qso.peer_call << " ===\n";
+                    if (qso.snr_i_sent_valid && qso.snr_i_got_valid) {
+                        std::cout << "  Report I gave him: " << qso.snr_i_sent << " dB\n";
+                        std::cout << "  Report he gave me:  " << qso.snr_i_got << " dB\n";
+                        std::cout << "  Asymmetry: " << (qso.snr_i_got - qso.snr_i_sent) << " dB\n\n";
+                    }
+                    qso_reset(&qso);
+                }
+            }
+            argus_reset(&argus);
+            current_slot_epoch_us = slot.slot_epoch_us;
+            slot_started = true;
+        }
+
+        if (sym_ring_available(&ring) >= (size_t)block_size) {
+            sym_ring_read(&ring, block_buf.data(), (size_t)block_size);
+            argus_process_block(&argus, block_buf.data());
+        } else {
+            hal_time_sleep_us(50000);
+        }
+    }
+
+    argus_free(&argus);
+    hal_audio_stop(audio);
+    hal_audio_close(audio);
+    restore_keyboard_mode();
+    std::cout << "\nStopped.\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -488,6 +707,8 @@ int main(int argc, char** argv)
     std::string cat_power_cal_csv;
     ConfigOptions config_opts;
     bool dump_config = false;
+    bool confirm = false;
+    std::string current_band;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -589,10 +810,22 @@ int main(int argc, char** argv)
             dump_config = true;
             continue;
         }
+        if (std::strcmp(argv[i], "--confirm") == 0) {
+            confirm = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--current-band") == 0 && i + 1 < argc) {
+            current_band = argv[++i];
+            continue;
+        }
     }
 
     if (dump_config) {
         return dump_config_mode(config_opts);
+    }
+    if (confirm) {
+        SymbolonConfig cfg = build_effective_config(config_opts);
+        return confirm_mode(cfg, device_name, current_band);
     }
     if (!decode_wav_path.empty()) {
         return decode_wav_mode(decode_wav_path);
