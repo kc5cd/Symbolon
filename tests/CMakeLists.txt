@@ -55,6 +55,16 @@ target_include_directories(test_cerberus PRIVATE ${CMAKE_SOURCE_DIR}/third_party
 target_link_libraries(test_cerberus PRIVATE sym_core)
 add_test(NAME core.cerberus_match COMMAND test_cerberus)
 
+# test_qso -- Phase 3's other test gate (kickoff's phasing table): "qso.c sequence tests
+# driven by synthetic decodes". Same argus_decode_t-fixture approach as test_cerberus.
+add_executable(test_qso
+    core/test_qso.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_qso PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_qso PRIVATE sym_core)
+add_test(NAME core.qso_sequence COMMAND test_qso)
+
 # test_hal -- Unity, same as test_core/test_ring. Exercises hal/cat_hamlib.c against
 # Hamlib's RIG_MODEL_DUMMY backend (in-process, no serial port, no real hardware, no
 # rigctld) -- this is Phase 2's own test gate per the kickoff's phasing table ("CAT
