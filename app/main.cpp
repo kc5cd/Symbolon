@@ -15,11 +15,18 @@
 extern "C" {
 #include "argus.h"
 #include "hal_audio.h"
+#include "hal_cat.h"
 #include "hal_time.h"
 #include "horae.h"
 #include "ring.h"
 #include "sym_types.h"
+#include "tx.h"
+#include <common/wave.h>
 }
+
+// Hamlib's own headers already self-guard with `#ifdef __cplusplus extern "C" {` --
+// deliberately not nested inside the block above.
+#include <hamlib/rig.h>
 
 namespace {
 
@@ -107,12 +114,77 @@ int decode_wav_mode(const std::string& wav_path)
     return 0;
 }
 
+// Phase 2, no keying: synthesizes `text` with core/tx.c and writes it straight to a WAV
+// file -- no audio device, no CAT, no PTT touched anywhere. Round-trips through
+// --decode-wav for a quick sanity check: `symbolon --tx-test "CQ KC5CD EM12" out.wav &&
+// symbolon --decode-wav out.wav` should print the same text back.
+int tx_test_mode(const std::string& text, const std::string& wav_path, float freq_hz)
+{
+    const int sample_rate_hz = 12000;
+    const int num_samples = sym_tx_signal_samples(sample_rate_hz);
+    std::vector<float> signal((size_t)num_samples);
+
+    if (sym_tx_synthesize(text.c_str(), freq_hz, sample_rate_hz, signal.data()) != SYM_TX_OK) {
+        std::cerr << "Failed to encode \"" << text << "\" as an FT8 message (not a valid standard, nonstandard, or free-text message?)\n";
+        return 1;
+    }
+    if (save_wav(signal.data(), num_samples, sample_rate_hz, wav_path.c_str()) != 0) {
+        std::cerr << "Failed to write " << wav_path << "\n";
+        return 1;
+    }
+
+    std::cout << "Wrote " << num_samples << " samples (" << ((float)num_samples / (float)sample_rate_hz)
+               << "s) at " << freq_hz << " Hz to " << wav_path << "\n";
+    return 0;
+}
+
+// Phase 2, no keying: opens real CAT via Hamlib and prints the rig's current frequency and
+// mode -- read-only, PTT is never touched here. hal_cat_set_ptt() exists and works (see
+// tests/hal/test_cat_hamlib.c against RIG_MODEL_DUMMY), but nothing in this CLI calls it;
+// per the kickoff's "never key the antenna first" ordering, that's Phase 4's job, after
+// core/atropos.c's watchdog exists.
+int cat_info_mode(const std::string& port)
+{
+    hal_cat_config_t cfg{};
+    cfg.port = port.c_str();
+    cfg.baud = 19200; // X6200 SERIAL-B via the CH342 USB bridge, per the kickoff's hardware facts
+    cfg.rig_model = RIG_MODEL_X6200;
+
+    hal_cat_t* cat = nullptr;
+    if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
+        std::cerr << "Failed to open CAT on " << port << "\n";
+        return 1;
+    }
+
+    uint64_t freq_hz = 0;
+    if (hal_cat_get_freq_hz(cat, &freq_hz) == HAL_RC_OK) {
+        std::cout << "Frequency: " << freq_hz << " Hz\n";
+    } else {
+        std::cerr << "Failed to read frequency: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    hal_cat_mode_t mode = HAL_CAT_MODE_USB;
+    if (hal_cat_get_mode(cat, &mode) == HAL_RC_OK) {
+        static const char* kModeNames[] = { "USB", "LSB", "DATA-U", "CW" };
+        std::cout << "Mode: " << kModeNames[mode] << "\n";
+    } else {
+        std::cerr << "Failed to read mode: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    hal_cat_close(cat);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     std::string decode_wav_path;
     std::string device_name;
+    std::string tx_test_text;
+    std::string tx_test_wav_path;
+    float tx_test_freq_hz = 1500.0f;
+    std::string cat_port;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -130,10 +202,29 @@ int main(int argc, char** argv)
             device_name = argv[++i];
             continue;
         }
+        if (std::strcmp(argv[i], "--tx-test") == 0 && i + 2 < argc) {
+            tx_test_text = argv[++i];
+            tx_test_wav_path = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--tx-freq") == 0 && i + 1 < argc) {
+            tx_test_freq_hz = std::stof(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--cat-port") == 0 && i + 1 < argc) {
+            cat_port = argv[++i];
+            continue;
+        }
     }
 
     if (!decode_wav_path.empty()) {
         return decode_wav_mode(decode_wav_path);
+    }
+    if (!tx_test_text.empty()) {
+        return tx_test_mode(tx_test_text, tx_test_wav_path, tx_test_freq_hz);
+    }
+    if (!cat_port.empty()) {
+        return cat_info_mode(cat_port);
     }
 
     std::signal(SIGINT, on_sigint);
