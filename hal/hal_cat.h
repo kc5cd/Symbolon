@@ -26,6 +26,7 @@ typedef enum {
     HAL_CAT_MODE_USB = 0, /* FT8 always transmits on USB dial frequency, per the kickoff */
     HAL_CAT_MODE_LSB,
     HAL_CAT_MODE_DATA_U,
+    HAL_CAT_MODE_DATA_L,
     HAL_CAT_MODE_CW,
 } hal_cat_mode_t;
 

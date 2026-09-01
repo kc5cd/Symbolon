@@ -46,6 +46,8 @@ static rmode_t hal_mode_to_hamlib(hal_cat_mode_t mode)
         return RIG_MODE_LSB;
     case HAL_CAT_MODE_DATA_U:
         return RIG_MODE_PKTUSB;
+    case HAL_CAT_MODE_DATA_L:
+        return RIG_MODE_PKTLSB;
     case HAL_CAT_MODE_CW:
         return RIG_MODE_CW;
     case HAL_CAT_MODE_USB:
@@ -61,6 +63,8 @@ static hal_cat_mode_t hamlib_mode_to_hal(rmode_t mode)
         return HAL_CAT_MODE_LSB;
     case RIG_MODE_PKTUSB:
         return HAL_CAT_MODE_DATA_U;
+    case RIG_MODE_PKTLSB:
+        return HAL_CAT_MODE_DATA_L;
     case RIG_MODE_CW:
         return HAL_CAT_MODE_CW;
     case RIG_MODE_USB:

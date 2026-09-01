@@ -138,27 +138,63 @@ int tx_test_mode(const std::string& text, const std::string& wav_path, float fre
     return 0;
 }
 
-// Phase 2, no keying: opens real CAT via Hamlib, optionally sets frequency (VFO tuning is
-// not PTT -- no RF is emitted by changing frequency alone), then prints the rig's current
-// frequency and mode. hal_cat_set_ptt() exists and works (see tests/hal/test_cat_hamlib.c
-// against RIG_MODEL_DUMMY), but nothing in this CLI calls it; per the kickoff's "never key
-// the antenna first" ordering, that's Phase 4's job, after core/atropos.c's watchdog exists.
-int cat_info_mode(const std::string& port, double set_freq_hz)
+bool parse_cat_mode(const std::string& s, hal_cat_mode_t* out_mode)
+{
+    if (s == "USB") { *out_mode = HAL_CAT_MODE_USB; return true; }
+    if (s == "LSB") { *out_mode = HAL_CAT_MODE_LSB; return true; }
+    if (s == "DATA-U") { *out_mode = HAL_CAT_MODE_DATA_U; return true; }
+    if (s == "DATA-L") { *out_mode = HAL_CAT_MODE_DATA_L; return true; }
+    if (s == "CW") { *out_mode = HAL_CAT_MODE_CW; return true; }
+    return false;
+}
+
+const char* cat_mode_name(hal_cat_mode_t mode)
+{
+    static const char* kModeNames[] = { "USB", "LSB", "DATA-U", "DATA-L", "CW" };
+    return kModeNames[mode];
+}
+
+struct CatOptions {
+    std::string port;
+    double set_freq_hz = 0.0;
+    std::string set_mode; // empty = don't set
+};
+
+// Phase 2, no keying: opens real CAT via Hamlib, applies any requested settings (frequency,
+// mode -- neither is PTT, no RF is emitted by either), then prints the rig's current status.
+// hal_cat_set_ptt() exists and works (see tests/hal/test_cat_hamlib.c against
+// RIG_MODEL_DUMMY), but nothing in this CLI calls it; per the kickoff's "never key the
+// antenna first" ordering, that's Phase 4's job, after core/atropos.c's watchdog exists.
+int cat_info_mode(const CatOptions& opts)
 {
     hal_cat_config_t cfg{};
-    cfg.port = port.c_str();
+    cfg.port = opts.port.c_str();
     cfg.baud = 19200; // X6200 SERIAL-B via the CH342 USB bridge, per the kickoff's hardware facts
     cfg.rig_model = RIG_MODEL_X6200;
 
     hal_cat_t* cat = nullptr;
     if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
-        std::cerr << "Failed to open CAT on " << port << "\n";
+        std::cerr << "Failed to open CAT on " << opts.port << "\n";
         return 1;
     }
 
-    if (set_freq_hz > 0.0) {
-        if (hal_cat_set_freq_hz(cat, (uint64_t)set_freq_hz) != HAL_RC_OK) {
+    if (opts.set_freq_hz > 0.0) {
+        if (hal_cat_set_freq_hz(cat, (uint64_t)opts.set_freq_hz) != HAL_RC_OK) {
             std::cerr << "Failed to set frequency: " << hal_cat_last_error(cat) << "\n";
+            hal_cat_close(cat);
+            return 1;
+        }
+    }
+
+    if (!opts.set_mode.empty()) {
+        hal_cat_mode_t mode;
+        if (!parse_cat_mode(opts.set_mode, &mode)) {
+            std::cerr << "Unknown mode \"" << opts.set_mode << "\" (expected USB, LSB, DATA-U, DATA-L, or CW)\n";
+            hal_cat_close(cat);
+            return 1;
+        }
+        if (hal_cat_set_mode(cat, mode) != HAL_RC_OK) {
+            std::cerr << "Failed to set mode: " << hal_cat_last_error(cat) << "\n";
             hal_cat_close(cat);
             return 1;
         }
@@ -173,8 +209,7 @@ int cat_info_mode(const std::string& port, double set_freq_hz)
 
     hal_cat_mode_t mode = HAL_CAT_MODE_USB;
     if (hal_cat_get_mode(cat, &mode) == HAL_RC_OK) {
-        static const char* kModeNames[] = { "USB", "LSB", "DATA-U", "CW" };
-        std::cout << "Mode: " << kModeNames[mode] << "\n";
+        std::cout << "Mode: " << cat_mode_name(mode) << "\n";
     } else {
         std::cerr << "Failed to read mode: " << hal_cat_last_error(cat) << "\n";
     }
@@ -192,8 +227,7 @@ int main(int argc, char** argv)
     std::string tx_test_text;
     std::string tx_test_wav_path;
     float tx_test_freq_hz = 1500.0f;
-    std::string cat_port;
-    double cat_set_freq_hz = 0.0;
+    CatOptions cat_opts;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -221,11 +255,15 @@ int main(int argc, char** argv)
             continue;
         }
         if (std::strcmp(argv[i], "--cat-port") == 0 && i + 1 < argc) {
-            cat_port = argv[++i];
+            cat_opts.port = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--cat-set-freq") == 0 && i + 1 < argc) {
-            cat_set_freq_hz = std::stod(argv[++i]);
+            cat_opts.set_freq_hz = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--cat-set-mode") == 0 && i + 1 < argc) {
+            cat_opts.set_mode = argv[++i];
             continue;
         }
     }
@@ -236,8 +274,8 @@ int main(int argc, char** argv)
     if (!tx_test_text.empty()) {
         return tx_test_mode(tx_test_text, tx_test_wav_path, tx_test_freq_hz);
     }
-    if (!cat_port.empty()) {
-        return cat_info_mode(cat_port, cat_set_freq_hz);
+    if (!cat_opts.port.empty()) {
+        return cat_info_mode(cat_opts);
     }
 
     std::signal(SIGINT, on_sigint);
