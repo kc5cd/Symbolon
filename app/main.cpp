@@ -148,10 +148,25 @@ bool parse_cat_mode(const std::string& s, hal_cat_mode_t* out_mode)
     return false;
 }
 
+bool parse_cat_agc(const std::string& s, hal_cat_agc_t* out_agc)
+{
+    if (s == "off") { *out_agc = HAL_CAT_AGC_OFF; return true; }
+    if (s == "slow") { *out_agc = HAL_CAT_AGC_SLOW; return true; }
+    if (s == "fast") { *out_agc = HAL_CAT_AGC_FAST; return true; }
+    if (s == "auto") { *out_agc = HAL_CAT_AGC_AUTO; return true; }
+    return false;
+}
+
 const char* cat_mode_name(hal_cat_mode_t mode)
 {
     static const char* kModeNames[] = { "USB", "LSB", "DATA-U", "DATA-L", "CW" };
     return kModeNames[mode];
+}
+
+const char* cat_agc_name(hal_cat_agc_t agc)
+{
+    static const char* kAgcNames[] = { "off", "slow", "fast", "auto" };
+    return kAgcNames[agc];
 }
 
 struct CatOptions {
@@ -159,13 +174,15 @@ struct CatOptions {
     double set_freq_hz = 0.0;
     std::string set_mode; // empty = don't set
     int set_preamp = -1;  // -1 = don't set, 0 = off, 1 = on
+    std::string set_agc;  // empty = don't set
 };
 
 // Phase 2, no keying: opens real CAT via Hamlib, applies any requested settings (frequency,
-// mode, preamp -- none of these are PTT, no RF is emitted by any of them), then prints the
-// rig's current status. hal_cat_set_ptt() exists and works (see tests/hal/test_cat_hamlib.c
-// against RIG_MODEL_DUMMY), but nothing in this CLI calls it; per the kickoff's "never key
-// the antenna first" ordering, that's Phase 4's job, after core/atropos.c's watchdog exists.
+// mode, preamp, AGC -- none of these are PTT, no RF is emitted by any of them), then prints
+// the rig's current status. hal_cat_set_ptt() exists and works (see
+// tests/hal/test_cat_hamlib.c against RIG_MODEL_DUMMY), but nothing in this CLI calls it;
+// per the kickoff's "never key the antenna first" ordering, that's Phase 4's job, after
+// core/atropos.c's watchdog exists.
 int cat_info_mode(const CatOptions& opts)
 {
     hal_cat_config_t cfg{};
@@ -209,6 +226,20 @@ int cat_info_mode(const CatOptions& opts)
         }
     }
 
+    if (!opts.set_agc.empty()) {
+        hal_cat_agc_t agc;
+        if (!parse_cat_agc(opts.set_agc, &agc)) {
+            std::cerr << "Unknown AGC setting \"" << opts.set_agc << "\" (expected off, slow, fast, or auto)\n";
+            hal_cat_close(cat);
+            return 1;
+        }
+        if (hal_cat_set_agc(cat, agc) != HAL_RC_OK) {
+            std::cerr << "Failed to set AGC: " << hal_cat_last_error(cat) << "\n";
+            hal_cat_close(cat);
+            return 1;
+        }
+    }
+
     uint64_t freq_hz = 0;
     if (hal_cat_get_freq_hz(cat, &freq_hz) == HAL_RC_OK) {
         std::cout << "Frequency: " << freq_hz << " Hz\n";
@@ -228,6 +259,13 @@ int cat_info_mode(const CatOptions& opts)
         std::cout << "Preamp: " << (preamp_enabled ? "on" : "off") << "\n";
     } else {
         std::cerr << "Failed to read preamp: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    hal_cat_agc_t agc = HAL_CAT_AGC_OFF;
+    if (hal_cat_get_agc(cat, &agc) == HAL_RC_OK) {
+        std::cout << "AGC: " << cat_agc_name(agc) << "\n";
+    } else {
+        std::cerr << "Failed to read AGC: " << hal_cat_last_error(cat) << "\n";
     }
 
     hal_cat_close(cat);
@@ -285,6 +323,10 @@ int main(int argc, char** argv)
         if (std::strcmp(argv[i], "--cat-preamp") == 0 && i + 1 < argc) {
             std::string v = argv[++i];
             cat_opts.set_preamp = (v == "on") ? 1 : 0;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--cat-agc") == 0 && i + 1 < argc) {
+            cat_opts.set_agc = argv[++i];
             continue;
         }
     }

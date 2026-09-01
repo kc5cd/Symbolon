@@ -212,6 +212,64 @@ hal_rc_t hal_cat_get_preamp(hal_cat_t* cat_handle, bool* out_enabled)
     return HAL_RC_OK;
 }
 
+static int hal_agc_to_hamlib(hal_cat_agc_t agc)
+{
+    switch (agc) {
+    case HAL_CAT_AGC_SLOW:
+        return RIG_AGC_SLOW;
+    case HAL_CAT_AGC_FAST:
+        return RIG_AGC_FAST;
+    case HAL_CAT_AGC_AUTO:
+        return RIG_AGC_AUTO;
+    case HAL_CAT_AGC_OFF:
+    default:
+        return RIG_AGC_OFF;
+    }
+}
+
+static hal_cat_agc_t hamlib_agc_to_hal(int agc)
+{
+    switch (agc) {
+    case RIG_AGC_SLOW:
+        return HAL_CAT_AGC_SLOW;
+    case RIG_AGC_FAST:
+        return HAL_CAT_AGC_FAST;
+    case RIG_AGC_AUTO:
+        return HAL_CAT_AGC_AUTO;
+    case RIG_AGC_OFF:
+    default:
+        return HAL_CAT_AGC_OFF;
+    }
+}
+
+hal_rc_t hal_cat_set_agc(hal_cat_t* cat_handle, hal_cat_agc_t agc)
+{
+    struct hal_cat* cat = (struct hal_cat*)cat_handle;
+    if (cat == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+    value_t val;
+    val.i = hal_agc_to_hamlib(agc);
+    int rc = rig_set_level(cat->rig, RIG_VFO_CURR, RIG_LEVEL_AGC, val);
+    return (rc == RIG_OK) ? HAL_RC_OK : record_hamlib_error(cat, "rig_set_level(AGC)", rc);
+}
+
+hal_rc_t hal_cat_get_agc(hal_cat_t* cat_handle, hal_cat_agc_t* out_agc)
+{
+    struct hal_cat* cat = (struct hal_cat*)cat_handle;
+    if (cat == NULL || out_agc == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+    value_t val;
+    int rc = rig_get_level(cat->rig, RIG_VFO_CURR, RIG_LEVEL_AGC, &val);
+    if (rc != RIG_OK) {
+        *out_agc = HAL_CAT_AGC_OFF;
+        return record_hamlib_error(cat, "rig_get_level(AGC)", rc);
+    }
+    *out_agc = hamlib_agc_to_hal(val.i);
+    return HAL_RC_OK;
+}
+
 hal_rc_t hal_cat_set_ptt(hal_cat_t* cat_handle, bool assert_tx)
 {
     struct hal_cat* cat = (struct hal_cat*)cat_handle;

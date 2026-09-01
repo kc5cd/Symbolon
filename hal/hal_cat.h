@@ -30,6 +30,13 @@ typedef enum {
     HAL_CAT_MODE_CW,
 } hal_cat_mode_t;
 
+typedef enum {
+    HAL_CAT_AGC_OFF = 0,
+    HAL_CAT_AGC_SLOW,
+    HAL_CAT_AGC_FAST,
+    HAL_CAT_AGC_AUTO,
+} hal_cat_agc_t;
+
 typedef struct {
     const char* port;      /* "COM5" / "/dev/ttyACM0"; NULL = Hamlib's own default */
     uint32_t    baud;      /* 19200 -- X6200 SERIAL-B via the CH342 USB bridge */
@@ -52,6 +59,9 @@ hal_rc_t hal_cat_get_mode(hal_cat_t* cat, hal_cat_mode_t* out_mode);
    rig_open()); (false) sets 0 dB (off). */
 hal_rc_t hal_cat_set_preamp(hal_cat_t* cat, bool enable);
 hal_rc_t hal_cat_get_preamp(hal_cat_t* cat, bool* out_enabled);
+
+hal_rc_t hal_cat_set_agc(hal_cat_t* cat, hal_cat_agc_t agc);
+hal_rc_t hal_cat_get_agc(hal_cat_t* cat, hal_cat_agc_t* out_agc);
 
 /* atropos.c's watchdog is the one caller that must be able to reach this through
    sym_host_t.ptt_set without going through Hamlib's normal request path -- see
