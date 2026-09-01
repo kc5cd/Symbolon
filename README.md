@@ -5,8 +5,9 @@ stations. It sits on a band, answers only a configured target station, and recor
 directions of every exchange — what the other end heard of you, and what you heard of them —
 into a queryable dataset. Full design and rationale: `symbolon-kickoff-prompt.md`.
 
-**Status:** early development. Phase 0 (build skeleton) is complete; Phase 1 (receive-only
-decode) is in progress. Not yet capable of transmitting.
+**Status:** early development. Phase 0 (build skeleton) and Phase 1 (receive-only decode)
+are complete — `symbolon` captures audio, decodes FT8 over a 15 s slot, and prints results
+to the console. Not yet capable of transmitting.
 
 ## Supported hardware
 
@@ -54,6 +55,20 @@ ctest --preset win-x64-debug
 Third-party dependencies (`ft8_lib`, Unity, doctest, miniaudio, SQLite) are vendored under
 `third_party/`, unmodified from upstream — see `third_party/CMakeLists.txt` and each
 subdirectory's own version notes.
+
+## Running
+
+```
+symbolon                          # live capture on the default audio device
+symbolon --list-devices           # show available capture devices
+symbolon --device "<name>"        # capture on a specific device instead of the default
+symbolon --decode-wav <path>      # decode one WAV file and print results, no device needed
+```
+
+The `ctest` suite includes a regression corpus (`corpus.aggregate`) that decodes ~30 real
+FT8 recordings from `third_party/ft8_lib/test/wav/` and checks aggregate recall against
+known-good transcripts. The gate is 70% recall, not 100% — `ft8_lib`'s own decoder tops out
+around 73% on this corpus, short of what WSJT-X's more sophisticated decoder achieves.
 
 ## License
 
