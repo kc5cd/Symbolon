@@ -20,6 +20,17 @@ target_include_directories(test_ring PRIVATE ${CMAKE_SOURCE_DIR}/third_party/uni
 target_link_libraries(test_ring PRIVATE sym_core)
 add_test(NAME core.ring COMMAND test_ring)
 
+# test_tx -- Phase 2's other test-gate half (see the kickoff's phasing table): an in-process
+# encode->decode round-trip. Synthesizes a message with core/tx.c and confirms core/argus.c
+# (Phase 1's decoder) recovers the same text -- no radio, no CAT, no audio device.
+add_executable(test_tx
+    core/test_tx.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_tx PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_tx PRIVATE sym_core)
+add_test(NAME core.tx_roundtrip COMMAND test_tx)
+
 # test_hal -- Unity, same as test_core/test_ring. Exercises hal/cat_hamlib.c against
 # Hamlib's RIG_MODEL_DUMMY backend (in-process, no serial port, no real hardware, no
 # rigctld) -- this is Phase 2's own test gate per the kickoff's phasing table ("CAT
