@@ -5,10 +5,12 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <regex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "wav_decode.h"
@@ -296,6 +298,66 @@ int cat_info_mode(const CatOptions& opts)
     return 0;
 }
 
+// Interactive, run at the bench (not from an automated test runner -- needs a human reading
+// the rig's own display): steps hal_cat_set_power_watts() through 0.5W increments from 0.5W
+// to 8.0W (the X6200's spec-sheet max, see hal_cat.h's max_tx_power_watts comment) and asks
+// what the radio's display shows at each step, to build a real commanded-vs-actual table.
+// No PTT is asserted -- setting a power level alone doesn't transmit.
+int cat_power_cal_mode(const std::string& port, const std::string& csv_path)
+{
+    hal_cat_config_t cfg{};
+    cfg.port = port.c_str();
+    cfg.baud = 19200;
+    cfg.rig_model = RIG_MODEL_X6200;
+    cfg.max_tx_power_watts = 8.0f;
+
+    hal_cat_t* cat = nullptr;
+    if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
+        std::cerr << "Failed to open CAT on " << port << "\n";
+        return 1;
+    }
+
+    std::cout << "X6200 TX power calibration -- commands each level below, then asks what the\n"
+                 "radio's own display shows. Press Enter alone to skip a step.\n\n";
+
+    std::vector<std::pair<float, float>> readings;
+    for (float commanded = 0.5f; commanded <= 8.0f + 0.001f; commanded += 0.5f) {
+        if (hal_cat_set_power_watts(cat, commanded) != HAL_RC_OK) {
+            std::cerr << "Failed to set " << commanded << " W: " << hal_cat_last_error(cat) << "\n";
+            continue;
+        }
+        std::cout << "Commanded " << commanded << " W -- radio display shows: " << std::flush;
+        std::string line;
+        std::getline(std::cin, line);
+        if (line.empty()) {
+            continue;
+        }
+        try {
+            float displayed = std::stof(line);
+            readings.push_back({ commanded, displayed });
+        } catch (const std::exception&) {
+            std::cerr << "  (couldn't parse \"" << line << "\", skipping)\n";
+        }
+    }
+
+    hal_cat_close(cat);
+
+    std::ofstream out(csv_path);
+    if (!out) {
+        std::cerr << "Failed to write " << csv_path << "\n";
+        return 1;
+    }
+    out << "commanded_watts,displayed_watts\n";
+    std::cout << "\ncommanded_watts,displayed_watts\n";
+    for (const auto& r : readings) {
+        out << r.first << "," << r.second << "\n";
+        std::cout << r.first << "," << r.second << "\n";
+    }
+
+    std::cout << "\nWrote " << readings.size() << " reading(s) to " << csv_path << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -306,6 +368,8 @@ int main(int argc, char** argv)
     std::string tx_test_wav_path;
     float tx_test_freq_hz = 1500.0f;
     CatOptions cat_opts;
+    std::string cat_power_cal_port;
+    std::string cat_power_cal_csv;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -357,6 +421,11 @@ int main(int argc, char** argv)
             cat_opts.set_power_w = std::stod(argv[++i]);
             continue;
         }
+        if (std::strcmp(argv[i], "--cat-power-cal") == 0 && i + 2 < argc) {
+            cat_power_cal_port = argv[++i];
+            cat_power_cal_csv = argv[++i];
+            continue;
+        }
     }
 
     if (!decode_wav_path.empty()) {
@@ -364,6 +433,9 @@ int main(int argc, char** argv)
     }
     if (!tx_test_text.empty()) {
         return tx_test_mode(tx_test_text, tx_test_wav_path, tx_test_freq_hz);
+    }
+    if (!cat_power_cal_port.empty()) {
+        return cat_power_cal_mode(cat_power_cal_port, cat_power_cal_csv);
     }
     if (!cat_opts.port.empty()) {
         return cat_info_mode(cat_opts);
