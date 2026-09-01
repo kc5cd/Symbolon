@@ -44,6 +44,17 @@ target_include_directories(test_argus_snr PRIVATE ${CMAKE_SOURCE_DIR}/third_part
 target_link_libraries(test_argus_snr PRIVATE sym_core)
 add_test(NAME core.argus_snr COMMAND test_argus_snr)
 
+# test_cerberus -- Phase 3's own test gate (kickoff's phasing table): "table-driven cerberus.c
+# match tests". Builds argus_decode_t fixtures directly rather than synthesizing/decoding real
+# audio -- cerberus.c's boundary is argus_decode_t in, cerberus_result_t out.
+add_executable(test_cerberus
+    core/test_cerberus.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_cerberus PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_cerberus PRIVATE sym_core)
+add_test(NAME core.cerberus_match COMMAND test_cerberus)
+
 # test_hal -- Unity, same as test_core/test_ring. Exercises hal/cat_hamlib.c against
 # Hamlib's RIG_MODEL_DUMMY backend (in-process, no serial port, no real hardware, no
 # rigctld) -- this is Phase 2's own test gate per the kickoff's phasing table ("CAT
