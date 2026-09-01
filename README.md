@@ -9,6 +9,12 @@ into a queryable dataset. Full design and rationale: `symbolon-kickoff-prompt.md
 are complete — `symbolon` captures audio, decodes FT8 over a 15 s slot, and prints results
 to the console. Not yet capable of transmitting.
 
+Phase 1's decoder recovers roughly 50-70% of what WSJT-X decodes on the same audio, both
+offline (a ~30-file WAV regression corpus) and live (WSJT-X-recorded samples) — a known,
+documented ceiling in the vendored `ft8_lib` decode algorithm, not a bug. A revisit/rewrite
+of the decode library is planned as a dedicated pass later, before the eventual on-radio
+(ARMv7) native build.
+
 ## Supported hardware
 
 Rig control (CAT) is done through [Hamlib](https://github.com/Hamlib/Hamlib), not a
