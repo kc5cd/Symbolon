@@ -1,0 +1,12 @@
+[submodule "third_party/ft8_lib"]
+	path = third_party/ft8_lib
+	url = https://github.com/kgoba/ft8_lib.git
+[submodule "third_party/unity"]
+	path = third_party/unity
+	url = https://github.com/ThrowTheSwitch/Unity.git
+[submodule "third_party/doctest"]
+	path = third_party/doctest
+	url = https://github.com/doctest/doctest.git
+[submodule "third_party/miniaudio"]
+	path = third_party/miniaudio
+	url = https://github.com/mackron/miniaudio.git

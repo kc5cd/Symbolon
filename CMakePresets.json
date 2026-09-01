@@ -1,0 +1,126 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-${presetName}"
+        },
+        {
+            "name": "win-x64-mingw",
+            "hidden": true,
+            "description": "MinGW-w64 GCC 13.1 from the Qt Online Installer (C:/Qt/Tools/mingw1310_64) -- settled choice: real C11 <stdatomic.h> with no experimental flags, and the same compiler family as the Linux and eventual ARMv7 builds. Not a Qt dependency; this project links no Qt.",
+            "inherits": "base",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "C:/Qt/Tools/mingw1310_64/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/Qt/Tools/mingw1310_64/bin/g++.exe",
+                "CMAKE_MAKE_PROGRAM": "C:/Qt/Tools/Ninja/ninja.exe"
+            }
+        },
+        {
+            "name": "win-x64-debug",
+            "displayName": "Windows x64 Debug (MinGW)",
+            "inherits": "win-x64-mingw",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "win-x64-release",
+            "displayName": "Windows x64 Release (MinGW)",
+            "inherits": "win-x64-mingw",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "linux-x64",
+            "hidden": true,
+            "description": "Not verifiable on this machine (no WSL, no Linux box) -- written blind against the settled decisions and first proven on the K8s CI runners. Assumes gcc/g++ and ninja are on PATH, which CI's runner image should already provide.",
+            "inherits": "base",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux-x64-debug",
+            "displayName": "Linux x64 Debug",
+            "inherits": "linux-x64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-x64-release",
+            "displayName": "Linux x64 Release",
+            "inherits": "linux-x64",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "win-x64-debug",
+            "configurePreset": "win-x64-debug"
+        },
+        {
+            "name": "win-x64-release",
+            "configurePreset": "win-x64-release"
+        },
+        {
+            "name": "linux-x64-debug",
+            "configurePreset": "linux-x64-debug"
+        },
+        {
+            "name": "linux-x64-release",
+            "configurePreset": "linux-x64-release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "win-x64-debug",
+            "configurePreset": "win-x64-debug",
+            "output": {
+                "outputJUnitFile": "results.xml",
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "win-x64-release",
+            "configurePreset": "win-x64-release",
+            "output": {
+                "outputJUnitFile": "results.xml",
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-x64-debug",
+            "configurePreset": "linux-x64-debug",
+            "output": {
+                "outputJUnitFile": "results.xml",
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-x64-release",
+            "configurePreset": "linux-x64-release",
+            "output": {
+                "outputJUnitFile": "results.xml",
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
