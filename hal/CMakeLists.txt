@@ -25,5 +25,17 @@ target_sources(sym_hal PRIVATE
     cat_hamlib.c
 )
 
+target_include_directories(sym_hal PRIVATE ${CMAKE_SOURCE_DIR}/third_party/miniaudio)
+
+if(WIN32)
+    # miniaudio's WASAPI backend resolves most of the Win32 API it needs via LoadLibrary at
+    # runtime, but a few symbols (CoInitializeEx/CoUninitialize, PropVariantClear) still
+    # need linking against these import libraries directly.
+    target_link_libraries(sym_hal PRIVATE ole32 winmm)
+else()
+    # ALSA backend, PC Linux.
+    target_link_libraries(sym_hal PRIVATE asound)
+endif()
+
 # hal_types.h reaches core/sym_types.h via a relative "../core/sym_types.h" include -- no
 # extra include path needed for that; core/ has zero dependencies of its own to pull in.
