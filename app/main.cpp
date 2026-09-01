@@ -138,12 +138,12 @@ int tx_test_mode(const std::string& text, const std::string& wav_path, float fre
     return 0;
 }
 
-// Phase 2, no keying: opens real CAT via Hamlib and prints the rig's current frequency and
-// mode -- read-only, PTT is never touched here. hal_cat_set_ptt() exists and works (see
-// tests/hal/test_cat_hamlib.c against RIG_MODEL_DUMMY), but nothing in this CLI calls it;
-// per the kickoff's "never key the antenna first" ordering, that's Phase 4's job, after
-// core/atropos.c's watchdog exists.
-int cat_info_mode(const std::string& port)
+// Phase 2, no keying: opens real CAT via Hamlib, optionally sets frequency (VFO tuning is
+// not PTT -- no RF is emitted by changing frequency alone), then prints the rig's current
+// frequency and mode. hal_cat_set_ptt() exists and works (see tests/hal/test_cat_hamlib.c
+// against RIG_MODEL_DUMMY), but nothing in this CLI calls it; per the kickoff's "never key
+// the antenna first" ordering, that's Phase 4's job, after core/atropos.c's watchdog exists.
+int cat_info_mode(const std::string& port, double set_freq_hz)
 {
     hal_cat_config_t cfg{};
     cfg.port = port.c_str();
@@ -154,6 +154,14 @@ int cat_info_mode(const std::string& port)
     if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
         std::cerr << "Failed to open CAT on " << port << "\n";
         return 1;
+    }
+
+    if (set_freq_hz > 0.0) {
+        if (hal_cat_set_freq_hz(cat, (uint64_t)set_freq_hz) != HAL_RC_OK) {
+            std::cerr << "Failed to set frequency: " << hal_cat_last_error(cat) << "\n";
+            hal_cat_close(cat);
+            return 1;
+        }
     }
 
     uint64_t freq_hz = 0;
@@ -185,6 +193,7 @@ int main(int argc, char** argv)
     std::string tx_test_wav_path;
     float tx_test_freq_hz = 1500.0f;
     std::string cat_port;
+    double cat_set_freq_hz = 0.0;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -215,6 +224,10 @@ int main(int argc, char** argv)
             cat_port = argv[++i];
             continue;
         }
+        if (std::strcmp(argv[i], "--cat-set-freq") == 0 && i + 1 < argc) {
+            cat_set_freq_hz = std::stod(argv[++i]);
+            continue;
+        }
     }
 
     if (!decode_wav_path.empty()) {
@@ -224,7 +237,7 @@ int main(int argc, char** argv)
         return tx_test_mode(tx_test_text, tx_test_wav_path, tx_test_freq_hz);
     }
     if (!cat_port.empty()) {
-        return cat_info_mode(cat_port);
+        return cat_info_mode(cat_port, cat_set_freq_hz);
     }
 
     std::signal(SIGINT, on_sigint);

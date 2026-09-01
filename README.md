@@ -75,11 +75,12 @@ symbolon --device "<name>"        # capture on a specific device instead of the 
 symbolon --decode-wav <path>      # decode one WAV file and print results, no device needed
 symbolon --tx-test "<text>" <wav> # synthesize an FT8 message to a WAV file, no radio touched
 symbolon --tx-freq <hz>           # audio frequency for --tx-test (default 1500 Hz)
-symbolon --cat-port <port>        # open CAT via Hamlib and print the rig's freq/mode (read-only)
+symbolon --cat-port <port>        # open CAT via Hamlib, apply any settings below, print status
+symbolon --cat-set-freq <hz>      # set VFO frequency (with --cat-port)
 ```
 
 `--tx-test` and `--cat-port` are Phase 2 (CAT + TX synthesis, **no keying**) — neither one
-ever asserts PTT. Round-trip a synthesized message through the decoder as a sanity check:
+ever asserts PTT, including a frequency change. Round-trip a synthesized message through the decoder as a sanity check:
 `symbolon --tx-test "CQ KC5CD EM12" out.wav && symbolon --decode-wav out.wav`.
 
 The `ctest` suite includes a regression corpus (`corpus.aggregate`) that decodes ~30 real
