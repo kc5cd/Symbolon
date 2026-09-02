@@ -112,6 +112,19 @@ void capture_callback(const float* samples, uint32_t frame_count, void* user)
     sym_ring_write(ring, samples, frame_count);
 }
 
+// std::to_string(double) always pads to 6 decimal places ("0.300000") -- this trims trailing
+// zeros (and a trailing '.') for the banner text in autonomous_mode() below.
+std::string format_minutes(double minutes)
+{
+    std::string s = std::to_string(minutes);
+    size_t dot = s.find('.');
+    if (dot != std::string::npos) {
+        size_t last = s.find_last_not_of('0');
+        s.erase((last == dot) ? last : last + 1);
+    }
+    return s;
+}
+
 std::string find_default_capture_device_name()
 {
     hal_audio_device_t devices[32];
@@ -925,12 +938,12 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     std::cout << "\nBand: " << current_band << " (dial " << dial_hz << " Hz +/- "
               << atropos_cfg.freq_tolerance_hz << " Hz)   TX power: " << tx_power_watts << " W\n"
               << "PTT watchdog: 13.5s (fixed)\n"
-              << "Dead-man timer: " << (dead_man_minutes > 0.0 ? (std::to_string(dead_man_minutes) + " min") : std::string("DISABLED")) << "\n"
+              << "Dead-man timer: " << (dead_man_minutes > 0.0 ? (format_minutes(dead_man_minutes) + " min") : std::string("DISABLED")) << "\n"
               << "TX slots/hour cap: " << (max_tx_per_hour > 0 ? std::to_string(max_tx_per_hour) : std::string("DISABLED")) << "\n"
-              << "Session TX-time cap: " << (max_tx_minutes > 0.0 ? (std::to_string(max_tx_minutes) + " min") : std::string("DISABLED")) << "\n";
+              << "Session TX-time cap: " << (max_tx_minutes > 0.0 ? (format_minutes(max_tx_minutes) + " min") : std::string("DISABLED")) << "\n";
     if (!is_beacon) {
         std::cout << "Armed bound: " << armed_qso_limit << " QSO(s)"
-                  << (armed_timeout_us > 0 ? (" or " + std::to_string(armed_timeout_minutes) + " min") : std::string(""))
+                  << (armed_timeout_us > 0 ? (" or " + format_minutes(armed_timeout_minutes) + " min") : std::string(""))
                   << ", whichever comes first\n";
     }
     std::cout << "\n*** THIS MODE ACTUALLY TRANSMITS. Confirm the rig is on the intended antenna\n"
