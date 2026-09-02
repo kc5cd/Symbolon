@@ -103,8 +103,14 @@ endif()
 add_executable(test_app
     app/test_smoke.cpp
     app/test_config.cpp
+    app/test_band_table.cpp
+    app/test_tx_playback.cpp
     ${CMAKE_SOURCE_DIR}/app/config.h
     ${CMAKE_SOURCE_DIR}/app/config.cpp
+    ${CMAKE_SOURCE_DIR}/app/band_table.h
+    ${CMAKE_SOURCE_DIR}/app/band_table.cpp
+    ${CMAKE_SOURCE_DIR}/app/tx_playback.h
+    ${CMAKE_SOURCE_DIR}/app/tx_playback.cpp
 )
 target_include_directories(test_app PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/doctest/doctest

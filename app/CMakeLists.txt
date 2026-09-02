@@ -5,6 +5,10 @@ add_executable(symbolon
     wav_decode.cpp
     config.h
     config.cpp
+    band_table.h
+    band_table.cpp
+    tx_playback.h
+    tx_playback.cpp
 )
 
 target_link_libraries(symbolon PRIVATE sym_core sym_hal ft8_lib_wave)
