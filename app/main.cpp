@@ -974,6 +974,18 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     bool is_beacon = (armed_qso_limit <= 0);
     uint64_t armed_timeout_us = (armed_timeout_minutes > 0.0) ? (uint64_t)(armed_timeout_minutes * 60.0 * 1000000.0) : 0ULL;
 
+    // Issue #7's 5th safety interlock: warn-only, not a hard gate (unlike the frequency
+    // allowlist's fail-closed precedent) -- an operator who's deliberately running against a
+    // clock they know is fine (or whose sync tool this HAL check doesn't recognize) stays in
+    // control. FT8 needs ~1s decode alignment; an unsynced clock burns TX time without ever
+    // completing an exchange, so this is loud, not silent.
+    bool ntp_synced = false;
+    hal_rc_t ntp_rc = hal_time_ntp_synced(&ntp_synced);
+    std::string clock_sync_status = (ntp_rc != HAL_RC_OK)
+        ? "UNKNOWN (could not query OS time-sync status)"
+        : (ntp_synced ? "OK (OS reports NTP-synced)"
+                      : "*** NOT SYNCED -- FT8 needs ~1s timing accuracy; TX will likely never complete an exchange ***");
+
     std::cout << "*** " << (is_beacon ? "BEACON" : "ARMED") << " MODE ***\n"
               << "My call: " << cfg.cerberus.my_call << "  Whitelist:";
     for (int i = 0; i < cfg.cerberus.whitelist_count; ++i) {
@@ -984,6 +996,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
               << "VFO tuning: " << (tune_vfo ? "automatic (app tunes to the dial frequency above)"
                                               : "operator responsibility (--tune-vfo not passed)") << "\n"
               << "PTT watchdog: 13.5s (fixed)\n"
+              << "Clock sync: " << clock_sync_status << "\n"
               << "Dead-man timer: " << (dead_man_minutes > 0.0 ? (format_minutes(dead_man_minutes) + " min") : std::string("DISABLED")) << "\n"
               << "TX slots/hour cap: " << (max_tx_per_hour > 0 ? std::to_string(max_tx_per_hour) : std::string("DISABLED")) << "\n"
               << "Session TX-time cap: " << (max_tx_minutes > 0.0 ? (format_minutes(max_tx_minutes) + " min") : std::string("DISABLED")) << "\n";

@@ -130,7 +130,10 @@ continuously against whitelist matches with no QSO-count bound. Every atropos.c 
 applies — the fixed 13.5s PTT watchdog, `--dead-man-minutes` (auto-disarm on no operator
 input/completed exchange), `--max-tx-per-hour`, and `--max-tx-minutes` — and any interlock
 left at its default (0/unset) is printed as `DISABLED` in the startup banner rather than
-silently assumed, per this project's "the mechanisms are there and honest" stance. Both modes
+silently assumed, per this project's "the mechanisms are there and honest" stance. A separate
+pre-flight check (not an atropos.c interlock, and not a hard gate) also queries the OS's own
+NTP-sync status and prints it in the banner — FT8 needs roughly ±1s timing accuracy, so an
+unsynced clock is flagged loudly but arming is still the operator's call. Both modes
 print a full interlock summary and require pressing Enter (after confirming the rig is on the
 intended antenna and power) before ever arming.
 
