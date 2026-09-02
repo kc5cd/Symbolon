@@ -479,6 +479,24 @@ struct ConfigOptions {
     bool has_min_snr = false;
     double min_snr_db = 0.0;
     bool legacy_mode = false; // undocumented: beacon_allow_token_alone
+
+    // CLI-side counterparts of AppOperationalConfig (config.h) -- issue #13's unification.
+    // Same "empty/negative = not passed on the CLI" sentinel convention as the fields above,
+    // so build_effective_config() can tell "not passed" apart from a legitimate 0.
+    std::string device_name;
+    std::string playback_device_name;
+    std::string cat_port; // armed/beacon's own rig connection -- NOT cat_info_mode's trigger,
+        // which stays main()'s separate, CLI-only CatOptions::port.
+    bool tune_vfo = false; // no --no-tune-vfo exists, so this can only ever turn it on
+    std::string current_band;
+    double tx_freq_hz = -1.0;
+    double tx_power_watts = -1.0;
+    double tx_freq_tolerance_hz = -1.0;
+    double armed_timeout_minutes = -1.0;
+    double dead_man_minutes = -1.0;
+    int max_tx_per_hour = -1;
+    double max_tx_minutes = -1.0;
+    std::string log_db_path;
 };
 
 // Builds the effective SymbolonConfig from --config's INI file (if given) with CLI overrides
@@ -535,7 +553,51 @@ SymbolonConfig build_effective_config(const ConfigOptions& opts)
         cfg.cerberus.has_snr_gate = true;
         cfg.cerberus.min_snr_db = (float)opts.min_snr_db;
     }
-    cfg.cerberus.beacon_allow_token_alone = opts.legacy_mode;
+    // CLI --legacy-mode always wins when passed; otherwise whatever [gates].legacy_mode (or
+    // its absence, i.e. false) the config file already loaded into cfg.cerberus stands.
+    if (opts.legacy_mode) {
+        cfg.cerberus.beacon_allow_token_alone = true;
+    }
+
+    // App-layer operational settings (issue #13) -- same "CLI wins when passed" merge as
+    // everything above, applied on top of whatever load_config_file() already populated.
+    if (!opts.device_name.empty()) {
+        cfg.app.capture_device = opts.device_name;
+    }
+    if (!opts.playback_device_name.empty()) {
+        cfg.app.playback_device = opts.playback_device_name;
+    }
+    if (!opts.cat_port.empty()) {
+        cfg.app.cat_port = opts.cat_port;
+    }
+    cfg.app.tune_vfo = cfg.app.tune_vfo || opts.tune_vfo; // CLI can only turn it on, never off
+    if (!opts.current_band.empty()) {
+        cfg.app.current_band = opts.current_band;
+    }
+    if (opts.tx_freq_hz >= 0.0) {
+        cfg.app.tx_freq_hz = opts.tx_freq_hz;
+    }
+    if (opts.tx_power_watts >= 0.0) {
+        cfg.app.tx_power_watts = opts.tx_power_watts;
+    }
+    if (opts.tx_freq_tolerance_hz >= 0.0) {
+        cfg.app.tx_freq_tolerance_hz = opts.tx_freq_tolerance_hz;
+    }
+    if (opts.armed_timeout_minutes >= 0.0) {
+        cfg.app.armed_timeout_minutes = opts.armed_timeout_minutes;
+    }
+    if (opts.dead_man_minutes >= 0.0) {
+        cfg.app.dead_man_minutes = opts.dead_man_minutes;
+    }
+    if (opts.max_tx_per_hour >= 0) {
+        cfg.app.max_tx_per_hour = opts.max_tx_per_hour;
+    }
+    if (opts.max_tx_minutes >= 0.0) {
+        cfg.app.max_tx_minutes = opts.max_tx_minutes;
+    }
+    if (!opts.log_db_path.empty()) {
+        cfg.app.log_db_path = opts.log_db_path;
+    }
 
     return cfg;
 }
@@ -569,6 +631,21 @@ int dump_config_mode(const ConfigOptions& opts)
     } else {
         std::cout << "min SNR gate: (disabled)\n";
     }
+    std::cout << "capture device: " << (cfg.app.capture_device.empty() ? "(system default)" : cfg.app.capture_device) << "\n";
+    std::cout << "playback device: " << (cfg.app.playback_device.empty() ? "(system default)" : cfg.app.playback_device) << "\n";
+    std::cout << "CAT port: " << (cfg.app.cat_port.empty() ? "(not set)" : cfg.app.cat_port) << "\n";
+    std::cout << "tune VFO: " << (cfg.app.tune_vfo ? "yes" : "no") << "\n";
+    std::cout << "current band: " << (cfg.app.current_band.empty() ? "(not set)" : cfg.app.current_band) << "\n";
+    std::cout << "TX freq: " << (cfg.app.tx_freq_hz >= 0.0 ? std::to_string(cfg.app.tx_freq_hz) + " Hz" : "(default)") << "\n";
+    std::cout << "TX power: " << (cfg.app.tx_power_watts >= 0.0 ? std::to_string(cfg.app.tx_power_watts) + " W" : "(not set)") << "\n";
+    std::cout << "TX freq tolerance: " << (cfg.app.tx_freq_tolerance_hz >= 0.0 ? std::to_string(cfg.app.tx_freq_tolerance_hz) + " Hz" : "(default)") << "\n";
+    std::cout << "armed timeout: " << (cfg.app.armed_timeout_minutes >= 0.0 ? std::to_string(cfg.app.armed_timeout_minutes) + " min" : "(disabled)") << "\n";
+    std::cout << "dead-man timeout: " << (cfg.app.dead_man_minutes >= 0.0 ? std::to_string(cfg.app.dead_man_minutes) + " min" : "(disabled)") << "\n";
+    std::cout << "max TX/hour: " << (cfg.app.max_tx_per_hour >= 0 ? std::to_string(cfg.app.max_tx_per_hour) : "(disabled)") << "\n";
+    std::cout << "max TX minutes/session: " << (cfg.app.max_tx_minutes >= 0.0 ? std::to_string(cfg.app.max_tx_minutes) + " min" : "(disabled)") << "\n";
+    std::cout << "log DB: " << (cfg.app.log_db_path.empty() ? "(default: symbolon.sqlite)" : cfg.app.log_db_path) << "\n";
+    // legacy_mode is deliberately never printed here, same as the beacon token's value --
+    // see this function's own doc comment.
     return 0;
 }
 
@@ -1242,8 +1319,6 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
 int main(int argc, char** argv)
 {
     std::string decode_wav_path;
-    std::string device_name;
-    std::string playback_device_name;
     std::string tx_test_text;
     std::string tx_test_wav_path;
     float tx_test_freq_hz = 1500.0f;
@@ -1253,20 +1328,17 @@ int main(int argc, char** argv)
     ConfigOptions config_opts;
     bool dump_config = false;
     bool confirm = false;
-    std::string current_band;
     std::string atropos_test_port;
     float atropos_test_power_w = 0.5f;
     bool armed = false;
     int armed_qso_limit = 0;
     bool beacon = false;
-    double armed_timeout_minutes = 0.0;
-    double dead_man_minutes = 0.0;
-    int max_tx_per_hour = 0;
-    double max_tx_minutes = 0.0;
-    double tx_freq_tolerance_hz = 100.0;
-    float tx_power_watts = 0.0f;
-    bool tune_vfo = false;
-    std::string log_db_path = "symbolon.sqlite";
+    // Everything else that used to be a bare local here (device_name, playback_device_name,
+    // current_band, armed_timeout_minutes, dead_man_minutes, max_tx_per_hour, max_tx_minutes,
+    // tx_freq_tolerance_hz, tx_power_watts, tune_vfo, log_db_path) now flows through
+    // config_opts -> build_effective_config() -> cfg.app, so --config and CLI flags merge the
+    // same way for all of them (issue #13) -- see the effective_* locals resolved from `cfg`
+    // right before dispatch, below.
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -1281,11 +1353,11 @@ int main(int argc, char** argv)
             continue;
         }
         if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
-            device_name = argv[++i];
+            config_opts.device_name = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--playback-device") == 0 && i + 1 < argc) {
-            playback_device_name = argv[++i];
+            config_opts.playback_device_name = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--tx-test") == 0 && i + 2 < argc) {
@@ -1294,11 +1366,20 @@ int main(int argc, char** argv)
             continue;
         }
         if (std::strcmp(argv[i], "--tx-freq") == 0 && i + 1 < argc) {
+            // Feeds both tx_test_freq_hz (--tx-test's own one-shot use, unaffected by
+            // --config) and config_opts.tx_freq_hz (armed/beacon's TX tone frequency, which
+            // an [operation] tx_freq_hz= config value can also supply).
             tx_test_freq_hz = std::stof(argv[++i]);
+            config_opts.tx_freq_hz = tx_test_freq_hz;
             continue;
         }
         if (std::strcmp(argv[i], "--cat-port") == 0 && i + 1 < argc) {
+            // Feeds both cat_opts.port (cat_info_mode's own dispatch trigger, unaffected by
+            // --config) and config_opts.cat_port (armed/beacon's rig connection, which a
+            // [cat] port= config value can also supply) -- see ConfigOptions::cat_port's
+            // doc comment for why these stay two separate variables.
             cat_opts.port = argv[++i];
+            config_opts.cat_port = cat_opts.port;
             continue;
         }
         if (std::strcmp(argv[i], "--cat-set-freq") == 0 && i + 1 < argc) {
@@ -1377,11 +1458,11 @@ int main(int argc, char** argv)
             continue;
         }
         if (std::strcmp(argv[i], "--current-band") == 0 && i + 1 < argc) {
-            current_band = argv[++i];
+            config_opts.current_band = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--log-db") == 0 && i + 1 < argc) {
-            log_db_path = argv[++i];
+            config_opts.log_db_path = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--atropos-watchdog-test") == 0 && i + 1 < argc) {
@@ -1398,7 +1479,7 @@ int main(int argc, char** argv)
             continue;
         }
         if (std::strcmp(argv[i], "--armed-timeout-minutes") == 0 && i + 1 < argc) {
-            armed_timeout_minutes = std::stod(argv[++i]);
+            config_opts.armed_timeout_minutes = std::stod(argv[++i]);
             continue;
         }
         if (std::strcmp(argv[i], "--beacon") == 0) {
@@ -1406,27 +1487,27 @@ int main(int argc, char** argv)
             continue;
         }
         if (std::strcmp(argv[i], "--dead-man-minutes") == 0 && i + 1 < argc) {
-            dead_man_minutes = std::stod(argv[++i]);
+            config_opts.dead_man_minutes = std::stod(argv[++i]);
             continue;
         }
         if (std::strcmp(argv[i], "--max-tx-per-hour") == 0 && i + 1 < argc) {
-            max_tx_per_hour = std::stoi(argv[++i]);
+            config_opts.max_tx_per_hour = std::stoi(argv[++i]);
             continue;
         }
         if (std::strcmp(argv[i], "--max-tx-minutes") == 0 && i + 1 < argc) {
-            max_tx_minutes = std::stod(argv[++i]);
+            config_opts.max_tx_minutes = std::stod(argv[++i]);
             continue;
         }
         if (std::strcmp(argv[i], "--tx-freq-tolerance-hz") == 0 && i + 1 < argc) {
-            tx_freq_tolerance_hz = std::stod(argv[++i]);
+            config_opts.tx_freq_tolerance_hz = std::stod(argv[++i]);
             continue;
         }
         if (std::strcmp(argv[i], "--tune-vfo") == 0) {
-            tune_vfo = true;
+            config_opts.tune_vfo = true;
             continue;
         }
         if (std::strcmp(argv[i], "--tx-power") == 0 && i + 1 < argc) {
-            tx_power_watts = std::stof(argv[++i]);
+            config_opts.tx_power_watts = std::stod(argv[++i]);
             continue;
         }
     }
@@ -1443,15 +1524,29 @@ int main(int argc, char** argv)
     if (dump_config) {
         return dump_config_mode(config_opts);
     }
+
+    // Built once, unconditionally, and reused by --confirm/--armed/--beacon below and by the
+    // default listen-only fallthrough further down -- so --config affects all of them
+    // identically (issue #13). Cheap even when unused (an empty --config path is a no-op).
+    SymbolonConfig cfg = build_effective_config(config_opts);
+    const std::string effective_log_db_path = cfg.app.log_db_path.empty() ? "symbolon.sqlite" : cfg.app.log_db_path;
+
     if (confirm) {
-        SymbolonConfig cfg = build_effective_config(config_opts);
-        return confirm_mode(cfg, device_name, current_band, log_db_path);
+        return confirm_mode(cfg, cfg.app.capture_device, cfg.app.current_band, effective_log_db_path);
     }
     if (armed || beacon) {
-        SymbolonConfig cfg = build_effective_config(config_opts);
-        return autonomous_mode(cfg, device_name, playback_device_name, current_band, cat_opts.port, tx_power_watts,
-            tx_test_freq_hz, beacon ? 0 : armed_qso_limit, armed_timeout_minutes,
-            dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz, tune_vfo, log_db_path);
+        float effective_tx_power_watts = cfg.app.tx_power_watts >= 0.0 ? (float)cfg.app.tx_power_watts : 0.0f;
+        float effective_tx_freq_hz = cfg.app.tx_freq_hz >= 0.0 ? (float)cfg.app.tx_freq_hz : tx_test_freq_hz;
+        double effective_armed_timeout_minutes = cfg.app.armed_timeout_minutes >= 0.0 ? cfg.app.armed_timeout_minutes : 0.0;
+        double effective_dead_man_minutes = cfg.app.dead_man_minutes >= 0.0 ? cfg.app.dead_man_minutes : 0.0;
+        int effective_max_tx_per_hour = cfg.app.max_tx_per_hour >= 0 ? cfg.app.max_tx_per_hour : 0;
+        double effective_max_tx_minutes = cfg.app.max_tx_minutes >= 0.0 ? cfg.app.max_tx_minutes : 0.0;
+        double effective_tx_freq_tolerance_hz = cfg.app.tx_freq_tolerance_hz >= 0.0 ? cfg.app.tx_freq_tolerance_hz : 100.0;
+        return autonomous_mode(cfg, cfg.app.capture_device, cfg.app.playback_device, cfg.app.current_band,
+            cfg.app.cat_port, effective_tx_power_watts,
+            effective_tx_freq_hz, beacon ? 0 : armed_qso_limit, effective_armed_timeout_minutes,
+            effective_dead_man_minutes, effective_max_tx_per_hour, effective_max_tx_minutes,
+            effective_tx_freq_tolerance_hz, cfg.app.tune_vfo, effective_log_db_path);
     }
     if (!atropos_test_port.empty()) {
         return atropos_watchdog_test_mode(atropos_test_port, atropos_test_power_w);
@@ -1471,7 +1566,7 @@ int main(int argc, char** argv)
 
     std::signal(SIGINT, on_sigint);
 
-    std::string capture_name = device_name.empty() ? find_default_capture_device_name() : device_name;
+    std::string capture_name = cfg.app.capture_device.empty() ? find_default_capture_device_name() : cfg.app.capture_device;
     std::cout << "symbolon " << kVersion << " -- capture device: " << capture_name << "\n";
 
     const uint32_t kSampleRate = 12000;
@@ -1482,7 +1577,7 @@ int main(int argc, char** argv)
 
     hal_audio_config_t audio_cfg{};
     audio_cfg.sample_rate_hz = kSampleRate;
-    audio_cfg.capture_device = device_name.empty() ? nullptr : device_name.c_str();
+    audio_cfg.capture_device = cfg.app.capture_device.empty() ? nullptr : cfg.app.capture_device.c_str();
 
     hal_audio_t* audio = nullptr;
     if (hal_audio_open(&audio, &audio_cfg, capture_callback, nullptr, &ring) != SYM_RC_OK) {
