@@ -138,6 +138,19 @@ std::string find_default_capture_device_name()
     return (device_count > 0) ? devices[0].name : "(none found)";
 }
 
+std::string find_default_playback_device_name()
+{
+    hal_audio_device_t devices[32];
+    size_t device_count = 0;
+    hal_audio_enumerate(true, devices, 32, &device_count);
+    for (size_t i = 0; i < device_count; ++i) {
+        if (devices[i].is_default) {
+            return devices[i].name;
+        }
+    }
+    return (device_count > 0) ? devices[0].name : "(none found)";
+}
+
 void print_decode_line(int hour, int min, int sec, const std::string& text, float freq_hz, float time_s, int score)
 {
     // score*0.5 is ft8_lib's own rough SNR stand-in (see demo/decode_ft8.c) -- no real SNR
@@ -150,13 +163,25 @@ int list_devices()
 {
     hal_audio_device_t devices[32];
     size_t device_count = 0;
+
     hal_audio_enumerate(false, devices, 32, &device_count);
+    std::cout << "Capture devices (--device):\n";
     for (size_t i = 0; i < device_count; ++i) {
         std::cout << (devices[i].is_default ? "* " : "  ") << devices[i].name << "\n";
     }
     if (device_count == 0) {
         std::cerr << "No capture devices found.\n";
     }
+
+    hal_audio_enumerate(true, devices, 32, &device_count);
+    std::cout << "\nPlayback devices (--playback-device, armed/beacon only):\n";
+    for (size_t i = 0; i < device_count; ++i) {
+        std::cout << (devices[i].is_default ? "* " : "  ") << devices[i].name << "\n";
+    }
+    if (device_count == 0) {
+        std::cerr << "No playback devices found.\n";
+    }
+
     return 0;
 }
 
@@ -869,7 +894,8 @@ uint32_t duplex_playback_callback(float* out, uint32_t frame_count, void* user)
 // from CLI flags (0/unset = disabled, matching atropos.h's own "mechanism exists, operator's
 // call" stance -- printed loudly in the startup banner below, not hidden).
 int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
-    const std::string& current_band, const std::string& cat_port, float tx_power_watts,
+    const std::string& playback_device_name, const std::string& current_band,
+    const std::string& cat_port, float tx_power_watts,
     float tx_freq_hz, int armed_qso_limit, double armed_timeout_minutes,
     double dead_man_minutes, int max_tx_per_hour, double max_tx_minutes,
     double tx_freq_tolerance_hz, bool tune_vfo)
@@ -978,7 +1004,14 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     atropos_arm(&atropos);
 
     std::string capture_name = device_name.empty() ? find_default_capture_device_name() : device_name;
-    std::cout << "Capture device: " << capture_name << "   Listening...\n";
+    // No cross-defaulting from --device: on real USB audio codecs (the X6200 included) the
+    // capture and playback endpoints are typically named differently (e.g. "Microphone (...)"
+    // vs "Speakers (...)"), confirmed by --list-devices on this dev machine -- guessing one
+    // from the other risks silently falling back to the system default while the banner still
+    // claims the guessed name (exactly issue #3's original bug, just relabeled). Same
+    // system-default-when-unset pattern as --device itself.
+    std::string playback_name = playback_device_name.empty() ? find_default_playback_device_name() : playback_device_name;
+    std::cout << "Capture device: " << capture_name << "   Playback device: " << playback_name << "   Listening...\n";
 
     const uint32_t kSampleRate = 12000;
     const size_t kRingCapacity = (size_t)kSampleRate * 5;
@@ -992,6 +1025,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     hal_audio_config_t audio_cfg{};
     audio_cfg.sample_rate_hz = kSampleRate;
     audio_cfg.capture_device = device_name.empty() ? nullptr : device_name.c_str();
+    audio_cfg.playback_device = playback_device_name.empty() ? nullptr : playback_device_name.c_str();
 
     hal_audio_t* audio = nullptr;
     if (hal_audio_open(&audio, &audio_cfg, duplex_capture_callback, duplex_playback_callback, &audio_ctx) != SYM_RC_OK) {
@@ -1169,6 +1203,7 @@ int main(int argc, char** argv)
 {
     std::string decode_wav_path;
     std::string device_name;
+    std::string playback_device_name;
     std::string tx_test_text;
     std::string tx_test_wav_path;
     float tx_test_freq_hz = 1500.0f;
@@ -1206,6 +1241,10 @@ int main(int argc, char** argv)
         }
         if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             device_name = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--playback-device") == 0 && i + 1 < argc) {
+            playback_device_name = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--tx-test") == 0 && i + 2 < argc) {
@@ -1365,7 +1404,7 @@ int main(int argc, char** argv)
     }
     if (armed || beacon) {
         SymbolonConfig cfg = build_effective_config(config_opts);
-        return autonomous_mode(cfg, device_name, current_band, cat_opts.port, tx_power_watts,
+        return autonomous_mode(cfg, device_name, playback_device_name, current_band, cat_opts.port, tx_power_watts,
             tx_test_freq_hz, beacon ? 0 : armed_qso_limit, armed_timeout_minutes,
             dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz, tune_vfo);
     }

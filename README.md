@@ -70,8 +70,9 @@ subdirectory's own version notes.
 
 ```
 symbolon                          # live capture on the default audio device
-symbolon --list-devices           # show available capture devices
+symbolon --list-devices           # show available capture AND playback devices
 symbolon --device "<name>"        # capture on a specific device instead of the default
+symbolon --playback-device "<name>" # armed/beacon: play synthesized TX audio on a specific device (default: system default)
 symbolon --decode-wav <path>      # decode one WAV file and print results, no device needed
 symbolon --tx-test "<text>" <wav> # synthesize an FT8 message to a WAV file, no radio touched
 symbolon --tx-freq <hz>           # audio frequency for --tx-test (default 1500 Hz)
@@ -117,7 +118,13 @@ load, not an antenna, and prompts for confirmation before ever asserting PTT.
 modes in this codebase that key PTT outside a dedicated bench test. Both need `--my-call`,
 `--whitelist`, `--current-band` (a recognized band name — its dial frequency becomes the
 `core/atropos.c` frequency-allowlist interlock, ±`--tx-freq-tolerance-hz`), `--cat-port`, and
-`--tx-power` (no default, set consciously). `--armed <n>` auto-sequences up to `n` complete
+`--tx-power` (no default, set consciously). Both open duplex audio (capture for decoding,
+playback for the synthesized TX signal) — `--playback-device` selects the playback side
+explicitly, same as `--device` already does for capture; on a real USB audio codec (the
+X6200's included) the two directions are commonly named differently (e.g. `Microphone (...)`
+vs `Speakers (...)`), so neither is ever guessed from the other — omitting either flag falls
+back to that direction's system default, and both resolved names are printed in the startup
+banner so it's never silently wrong. `--armed <n>` auto-sequences up to `n` complete
 QSOs and then disarms (or `--armed-timeout-minutes`, whichever comes first); `--beacon` runs
 continuously against whitelist matches with no QSO-count bound. Every atropos.c interlock
 applies — the fixed 13.5s PTT watchdog, `--dead-man-minutes` (auto-disarm on no operator
