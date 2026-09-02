@@ -269,6 +269,91 @@ static void test_standard_message_has_structured_fields(void)
     free(slot_buf);
 }
 
+/* Issue #9: ft8_lib's candidate search can find the same transmission at more than one
+   adjacent frequency bin, and each independently decodes to identical text -- before the fix,
+   argus_decode_slot() surfaced all of them. Runs the same synth-plus-noise pipeline as
+   run_snr_case() at a range of SNRs (clean through near-threshold, where multiple candidate
+   hits are most likely) and asserts the decoded text never appears more than once in the
+   output -- a real regression guard for the dedup logic in argus_decode_slot(), not just an
+   invariant true by construction, since it exercises the actual ft8_lib candidate search. */
+static void run_no_duplicate_text_case(float true_snr_db)
+{
+    s_rng_state = 0xC0FFEEu;
+
+    const int sample_rate_hz = 12000;
+    const float tx_freq_hz = 1500.0f;
+    const char* tx_text = "CQ KC5CD EM12";
+
+    int tone_samples = sym_tx_signal_samples(sample_rate_hz);
+    float* tone_buf = (float*)malloc((size_t)tone_samples * sizeof(float));
+    TEST_ASSERT_NOT_NULL(tone_buf);
+    TEST_ASSERT_EQUAL_INT(SYM_TX_OK, sym_tx_synthesize(tx_text, tx_freq_hz, sample_rate_hz, tone_buf));
+
+    const int slot_samples = 15 * sample_rate_hz;
+    const int offset_samples = 1 * sample_rate_hz;
+    float* slot_buf = (float*)calloc((size_t)slot_samples, sizeof(float));
+    TEST_ASSERT_NOT_NULL(slot_buf);
+    memcpy(slot_buf + offset_samples, tone_buf, (size_t)tone_samples * sizeof(float));
+
+    if (true_snr_db < 1000.0f) {
+        double signal_power = 0.0;
+        for (int i = 0; i < tone_samples; ++i) {
+            signal_power += (double)tone_buf[i] * (double)tone_buf[i];
+        }
+        signal_power /= tone_samples;
+
+        double ref_bw_hz = 2500.0;
+        double full_bw_hz = sample_rate_hz / 2.0;
+        double noise_power_ref_bw = signal_power / pow(10.0, true_snr_db / 10.0);
+        double noise_power_full_bw = noise_power_ref_bw * (full_bw_hz / ref_bw_hz);
+        float noise_amplitude = (float)sqrt(noise_power_full_bw);
+
+        for (int i = 0; i < slot_samples; ++i) {
+            slot_buf[i] += noise_amplitude * gaussian();
+        }
+    }
+
+    argus_config_t cfg = { 0 };
+    cfg.f_min_hz = 200.0f;
+    cfg.f_max_hz = 3000.0f;
+    cfg.sample_rate_hz = sample_rate_hz;
+    cfg.time_osr = 2;
+    cfg.freq_osr = 2;
+
+    argus_t argus;
+    argus_init(&argus, &cfg);
+    int block_size = argus_block_size(&argus);
+    for (int pos = 0; pos + block_size <= slot_samples; pos += block_size) {
+        argus_process_block(&argus, slot_buf + pos);
+    }
+
+    argus_decode_t decodes[16];
+    int num_decoded = argus_decode_slot(&argus, decodes, 16);
+    argus_free(&argus);
+
+    for (int i = 0; i < num_decoded; ++i) {
+        for (int j = i + 1; j < num_decoded; ++j) {
+            TEST_ASSERT_FALSE_MESSAGE(strcmp(decodes[i].text, decodes[j].text) == 0,
+                "argus_decode_slot() returned the same message text twice in one slot");
+        }
+    }
+
+    free(tone_buf);
+    free(slot_buf);
+}
+
+static void test_no_duplicate_text_clean_signal(void)
+{
+    run_no_duplicate_text_case(1000.0f); /* sentinel: no noise added at all */
+}
+
+static void test_no_duplicate_text_near_threshold(void)
+{
+    run_no_duplicate_text_case(-10.0f); /* same near-threshold case as test_snr_at_minus_10db --
+                                            the noisiest, most candidate-hit-prone case already
+                                            known to still decode reliably */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -277,5 +362,7 @@ int main(void)
     RUN_TEST(test_snr_at_plus_10db);
     RUN_TEST(test_free_text_has_no_structured_fields);
     RUN_TEST(test_standard_message_has_structured_fields);
+    RUN_TEST(test_no_duplicate_text_clean_signal);
+    RUN_TEST(test_no_duplicate_text_near_threshold);
     return UNITY_END();
 }

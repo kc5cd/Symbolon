@@ -82,12 +82,14 @@ int argus_block_size(const argus_t* argus); /* samples argus_process_block() exp
 void argus_process_block(argus_t* argus, const float* samples);
 
 /* Runs candidate search + decode over everything accumulated since the last argus_reset().
-   Returns the number of decodes written to out (up to max_out). Does not deduplicate --
-   the same message can appear more than once if found via multiple candidates; callers that
-   care about a unique set (see tests/corpus/test_corpus.cpp) dedupe on the text field
-   themselves. Phase 1 scope note: unlike ft8_lib's own demo, this does not maintain a
-   persistent callsign hash table across argus_t instances -- see argus.c's static hash
-   table, sized for a single slot's worth of hashed-callsign references. */
+   Returns the number of decodes written to out (up to max_out). Deduplicates adjacent-bin
+   near-identical decodes of the same transmission (same text, within a few bin widths in
+   frequency -- see argus.c's kDedupFreqWindowHz and issue #9), keeping whichever candidate
+   scored higher; two distinct transmissions carrying identical text within one slot are not
+   expected to collide under this window. Phase 1 scope note: unlike ft8_lib's own demo, this
+   does not maintain a persistent callsign hash table across argus_t instances -- see
+   argus.c's static hash table, sized for a single slot's worth of hashed-callsign
+   references. */
 int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out);
 
 #ifdef __cplusplus
