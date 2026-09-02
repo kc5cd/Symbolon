@@ -11,7 +11,9 @@ engine, QSO state machine, `--confirm` dry-run mode) is complete. Phase 4 (PTT w
 safety interlocks, `--armed`/`--beacon` autonomy) is built and unit-tested, with the PTT
 watchdog itself bench-verified against real hardware — `--armed`/`--beacon` have not yet been
 run for real, per `symbolon-kickoff-prompt.md`'s "never key the antenna first" verification
-ordering.
+ordering. `core/mnemosyne.c`'s heard/QSO observation log — planned as Phase 5 in the kickoff
+(GitHub issue #10) — is also built ahead of schedule and wired into `--confirm`/`--armed`/
+`--beacon` via `app/sqlite_sink.cpp`; see `--log-db` below.
 
 Phase 1's decoder recovers roughly 50-70% of what WSJT-X decodes on the same audio, both
 offline (a ~30-file WAV regression corpus) and live (WSJT-X-recorded samples) — a known,
@@ -90,6 +92,7 @@ symbolon --beacon-token-file <path>  # private free-text beacon token, kept out 
 symbolon --dump-config            # print the effective whitelist/gates config and exit
 symbolon --confirm                # confirm-mode QSO dry run (see below) -- needs --my-call + --whitelist
 symbolon --current-band <name>    # tells confirm mode what band it's on, for the band gate
+symbolon --log-db <path>          # heard/QSO observation log, confirm+armed/beacon (default: symbolon.sqlite)
 symbolon --atropos-watchdog-test <port>   # bench test: real PTT, deliberately hung (see below)
 symbolon --atropos-test-power <watts>     # TX power for the watchdog test (default 0.5W)
 symbolon --armed <n>              # auto-sequence up to n QSOs, then disarm -- ACTUALLY TRANSMITS
@@ -136,6 +139,15 @@ NTP-sync status and prints it in the banner — FT8 needs roughly ±1s timing ac
 unsynced clock is flagged loudly but arming is still the operator's call. Both modes
 print a full interlock summary and require pressing Enter (after confirming the rig is on the
 intended antenna and power) before ever arming.
+
+`--log-db <path>` (both `--confirm` and `--armed`/`--beacon`) is `core/mnemosyne.c`'s
+observation log: every decode from a whitelisted station is recorded regardless of whether
+it was directed at me, a CQ, or ever became a full exchange — "heard but not worked" is
+still real propagation evidence for this project's core research goal. Completed QSOs are
+recorded too, with both SNR directions and the asymmetry the whole project exists to measure.
+Written via `app/sqlite_sink.cpp` to a SQLite database (WAL mode) plus a `_observations.csv`/
+`_qso_log.csv` sidecar next to it for eyeballing without a SQLite client. A failure to open
+the log is a warning, not fatal — confirm/armed/beacon keep running without it.
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
 keying**) — none of them ever assert PTT, including the power/mode/AGC/preamp controls.
