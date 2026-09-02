@@ -85,7 +85,7 @@ symbolon --cat-preamp <on|off>    # toggle the front-end preamp (with --cat-port
 symbolon --cat-agc <setting>      # off | slow | fast | auto (with --cat-port)
 symbolon --cat-set-power <watts>  # TX power, rounded to the nearest 0.5W (with --cat-port)
 symbolon --cat-power-cal <port> <csv> # interactive: step 0.5W increments, log the rig's own display
-symbolon --config <path>          # load whitelist/gates from an INI file
+symbolon --config <path>          # load station/whitelist/gates/device/cat/operation/autonomy/logging settings from an INI file
 symbolon --my-call <call> --my-grid <grid> --whitelist <csv>  # CLI overrides, win over --config
 symbolon --band <name> --freq-min <hz> --freq-max <hz> --min-snr <db>  # optional match gates
 symbolon --beacon-token-file <path>  # private free-text beacon token, kept out of --config
@@ -139,6 +139,21 @@ NTP-sync status and prints it in the banner — FT8 needs roughly ±1s timing ac
 unsynced clock is flagged loudly but arming is still the operator's call. Both modes
 print a full interlock summary and require pressing Enter (after confirming the rig is on the
 intended antenna and power) before ever arming.
+
+`--config <path>` loads a plain INI file (hand-written parser, no vendored dependency) that
+can hold every operational setting the CLI flags above can: `[station]` (`call`/`grid`),
+`[whitelist]` (`calls=` csv), `[gates]` (`band`/`freq_min_hz`/`freq_max_hz`/`min_snr_db`),
+`[device]` (`capture`/`playback`), `[cat]` (`port`/`tune_vfo`), `[operation]`
+(`current_band`/`tx_freq_hz`/`tx_power_watts`/`tx_freq_tolerance_hz`), `[autonomy]`
+(`armed_timeout_minutes`/`dead_man_minutes`/`max_tx_per_hour`/`max_tx_minutes`), and
+`[logging]` (`log_db`). Any CLI flag passed on top always overrides the file's value for
+that setting — a config file can hold a full station profile, and a given run only needs to
+pass what it wants to change. **Mode-triggering flags (`--confirm`, `--armed`, `--beacon`)
+are deliberately CLI-only and can never be set from a config file** — a config can hold
+every setting for how the station operates, but never by itself start an autonomous TX
+mode. The private beacon token stays out of this file entirely (`--beacon-token-file`, see
+above). `--dump-config` prints the fully merged, effective settings (file + CLI) without
+ever needing to actually run any mode.
 
 `--log-db <path>` (both `--confirm` and `--armed`/`--beacon`) is `core/mnemosyne.c`'s
 observation log: every decode from a whitelisted station is recorded regardless of whether
