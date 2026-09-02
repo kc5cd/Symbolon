@@ -33,6 +33,7 @@
 #include "wav_decode.h"
 #include "band_table.h"
 #include "tx_playback.h"
+#include "sqlite_sink.h"
 
 extern "C" {
 #include "argus.h"
@@ -42,6 +43,7 @@ extern "C" {
 #include "hal_cat.h"
 #include "hal_time.h"
 #include "horae.h"
+#include "mnemosyne.h"
 #include "qso.h"
 #include "ring.h"
 #include "sym_types.h"
@@ -709,7 +711,8 @@ int atropos_watchdog_test_mode(const std::string& port, float power_watts)
 // watchdog exists. current_band is a plain operator-supplied string (no CAT connection exists
 // in this mode to read it automatically) -- pass "" to leave any configured band gate always
 // failing closed rather than silently trusting an unverified value.
-int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, const std::string& current_band)
+int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, const std::string& current_band,
+    const std::string& log_db_path)
 {
     if (cfg.cerberus.my_call[0] == '\0' || cfg.cerberus.whitelist_count == 0) {
         std::cerr << "Confirm mode needs --my-call and a non-empty whitelist (via --config and/or --whitelist).\n";
@@ -769,6 +772,15 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
     qso_t qso;
     qso_init(&qso);
 
+    SqliteSink log_sink(log_db_path);
+    if (!log_sink.is_open()) {
+        std::cerr << "Warning: couldn't open observation log '" << log_db_path << "': "
+                  << log_sink.last_error() << " -- continuing without heard/QSO logging.\n";
+    }
+    mnemosyne_t mnemosyne;
+    mnemosyne_sink_t mnemosyne_sink = log_sink.as_sink();
+    mnemosyne_init(&mnemosyne, &mnemosyne_sink);
+
     const uint64_t kConfirmWindowUs = 2ULL * 1000000ULL; // ~2s, per the kickoff
 
     uint64_t current_slot_epoch_us = 0;
@@ -793,6 +805,7 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
 
                     const char* band_arg = current_band.empty() ? nullptr : current_band.c_str();
                     cerberus_result_t match = cerberus_evaluate(&cfg.cerberus, &decodes[i], band_arg);
+                    mnemosyne_observe(&mnemosyne, &decodes[i], &match, band_arg, current_slot_epoch_us);
 
                     if (match.matched) {
                         std::cout << "  -> matched (" << (match.is_beacon_token ? "beacon token" : "exchange") << ")\n";
@@ -833,10 +846,12 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
                         std::cout << "  Report he gave me:  " << qso.snr_i_got << " dB\n";
                         std::cout << "  Asymmetry: " << (qso.snr_i_got - qso.snr_i_sent) << " dB\n\n";
                     }
+                    mnemosyne_log_qso(&mnemosyne, &qso, &cfg.qso, current_slot_epoch_us);
                     qso_reset(&qso);
                 }
             }
             argus_reset(&argus);
+            mnemosyne_slot_reset(&mnemosyne);
             current_slot_epoch_us = slot.slot_epoch_us;
             slot_started = true;
         }
@@ -898,7 +913,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     const std::string& cat_port, float tx_power_watts,
     float tx_freq_hz, int armed_qso_limit, double armed_timeout_minutes,
     double dead_man_minutes, int max_tx_per_hour, double max_tx_minutes,
-    double tx_freq_tolerance_hz, bool tune_vfo)
+    double tx_freq_tolerance_hz, bool tune_vfo, const std::string& log_db_path)
 {
     if (cfg.cerberus.my_call[0] == '\0' || cfg.cerberus.whitelist_count == 0) {
         std::cerr << "Armed/beacon mode needs --my-call and a non-empty whitelist (via --config and/or --whitelist).\n";
@@ -1071,6 +1086,15 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     qso_t qso;
     qso_init(&qso);
 
+    SqliteSink log_sink(log_db_path);
+    if (!log_sink.is_open()) {
+        std::cerr << "Warning: couldn't open observation log '" << log_db_path << "': "
+                  << log_sink.last_error() << " -- continuing without heard/QSO logging.\n";
+    }
+    mnemosyne_t mnemosyne;
+    mnemosyne_sink_t mnemosyne_sink = log_sink.as_sink();
+    mnemosyne_init(&mnemosyne, &mnemosyne_sink);
+
     uint64_t current_slot_epoch_us = 0;
     bool slot_started = false;
     int qso_completed_count = 0;
@@ -1107,6 +1131,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
 
                     const char* band_arg = current_band.empty() ? nullptr : current_band.c_str();
                     cerberus_result_t match = cerberus_evaluate(&cfg.cerberus, &decodes[i], band_arg);
+                    mnemosyne_observe(&mnemosyne, &decodes[i], &match, band_arg, current_slot_epoch_us);
 
                     if (match.matched) {
                         std::cout << "  -> matched (" << (match.is_beacon_token ? "beacon token" : "exchange") << ")\n";
@@ -1175,6 +1200,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
                         std::cout << "  Report he gave me:  " << qso.snr_i_got << " dB\n";
                         std::cout << "  Asymmetry: " << (qso.snr_i_got - qso.snr_i_sent) << " dB\n\n";
                     }
+                    mnemosyne_log_qso(&mnemosyne, &qso, &cfg.qso, current_slot_epoch_us);
                     qso_reset(&qso);
                     atropos_operator_input(&atropos); // a completed exchange also counts as a
                         // dead-man reset, per the user's choice this session -- not keypress-only.
@@ -1187,6 +1213,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
                 }
             }
             argus_reset(&argus);
+            mnemosyne_slot_reset(&mnemosyne);
             current_slot_epoch_us = slot.slot_epoch_us;
             slot_started = true;
         }
@@ -1239,6 +1266,7 @@ int main(int argc, char** argv)
     double tx_freq_tolerance_hz = 100.0;
     float tx_power_watts = 0.0f;
     bool tune_vfo = false;
+    std::string log_db_path = "symbolon.sqlite";
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -1352,6 +1380,10 @@ int main(int argc, char** argv)
             current_band = argv[++i];
             continue;
         }
+        if (std::strcmp(argv[i], "--log-db") == 0 && i + 1 < argc) {
+            log_db_path = argv[++i];
+            continue;
+        }
         if (std::strcmp(argv[i], "--atropos-watchdog-test") == 0 && i + 1 < argc) {
             atropos_test_port = argv[++i];
             continue;
@@ -1413,13 +1445,13 @@ int main(int argc, char** argv)
     }
     if (confirm) {
         SymbolonConfig cfg = build_effective_config(config_opts);
-        return confirm_mode(cfg, device_name, current_band);
+        return confirm_mode(cfg, device_name, current_band, log_db_path);
     }
     if (armed || beacon) {
         SymbolonConfig cfg = build_effective_config(config_opts);
         return autonomous_mode(cfg, device_name, playback_device_name, current_band, cat_opts.port, tx_power_watts,
             tx_test_freq_hz, beacon ? 0 : armed_qso_limit, armed_timeout_minutes,
-            dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz, tune_vfo);
+            dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz, tune_vfo, log_db_path);
     }
     if (!atropos_test_port.empty()) {
         return atropos_watchdog_test_mode(atropos_test_port, atropos_test_power_w);
