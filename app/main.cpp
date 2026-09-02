@@ -115,7 +115,9 @@ void capture_callback(const float* samples, uint32_t frame_count, void* user)
 }
 
 // std::to_string(double) always pads to 6 decimal places ("0.300000") -- this trims trailing
-// zeros (and a trailing '.') for the banner text in autonomous_mode() below.
+// zeros (and a trailing '.'). Named for its original use (the banner text in
+// autonomous_mode() below) but the trimming itself is unit-agnostic; dump_config_mode()
+// reuses it for Hz/watts values too rather than re-deriving the same fix.
 std::string format_minutes(double minutes)
 {
     std::string s = std::to_string(minutes);
@@ -636,13 +638,13 @@ int dump_config_mode(const ConfigOptions& opts)
     std::cout << "CAT port: " << (cfg.app.cat_port.empty() ? "(not set)" : cfg.app.cat_port) << "\n";
     std::cout << "tune VFO: " << (cfg.app.tune_vfo ? "yes" : "no") << "\n";
     std::cout << "current band: " << (cfg.app.current_band.empty() ? "(not set)" : cfg.app.current_band) << "\n";
-    std::cout << "TX freq: " << (cfg.app.tx_freq_hz >= 0.0 ? std::to_string(cfg.app.tx_freq_hz) + " Hz" : "(default)") << "\n";
-    std::cout << "TX power: " << (cfg.app.tx_power_watts >= 0.0 ? std::to_string(cfg.app.tx_power_watts) + " W" : "(not set)") << "\n";
-    std::cout << "TX freq tolerance: " << (cfg.app.tx_freq_tolerance_hz >= 0.0 ? std::to_string(cfg.app.tx_freq_tolerance_hz) + " Hz" : "(default)") << "\n";
-    std::cout << "armed timeout: " << (cfg.app.armed_timeout_minutes >= 0.0 ? std::to_string(cfg.app.armed_timeout_minutes) + " min" : "(disabled)") << "\n";
-    std::cout << "dead-man timeout: " << (cfg.app.dead_man_minutes >= 0.0 ? std::to_string(cfg.app.dead_man_minutes) + " min" : "(disabled)") << "\n";
+    std::cout << "TX freq: " << (cfg.app.tx_freq_hz >= 0.0 ? format_minutes(cfg.app.tx_freq_hz) + " Hz" : "(default)") << "\n";
+    std::cout << "TX power: " << (cfg.app.tx_power_watts >= 0.0 ? format_minutes(cfg.app.tx_power_watts) + " W" : "(not set)") << "\n";
+    std::cout << "TX freq tolerance: " << (cfg.app.tx_freq_tolerance_hz >= 0.0 ? format_minutes(cfg.app.tx_freq_tolerance_hz) + " Hz" : "(default)") << "\n";
+    std::cout << "armed timeout: " << (cfg.app.armed_timeout_minutes >= 0.0 ? format_minutes(cfg.app.armed_timeout_minutes) + " min" : "(disabled)") << "\n";
+    std::cout << "dead-man timeout: " << (cfg.app.dead_man_minutes >= 0.0 ? format_minutes(cfg.app.dead_man_minutes) + " min" : "(disabled)") << "\n";
     std::cout << "max TX/hour: " << (cfg.app.max_tx_per_hour >= 0 ? std::to_string(cfg.app.max_tx_per_hour) : "(disabled)") << "\n";
-    std::cout << "max TX minutes/session: " << (cfg.app.max_tx_minutes >= 0.0 ? std::to_string(cfg.app.max_tx_minutes) + " min" : "(disabled)") << "\n";
+    std::cout << "max TX minutes/session: " << (cfg.app.max_tx_minutes >= 0.0 ? format_minutes(cfg.app.max_tx_minutes) + " min" : "(disabled)") << "\n";
     std::cout << "log DB: " << (cfg.app.log_db_path.empty() ? "(default: symbolon.sqlite)" : cfg.app.log_db_path) << "\n";
     // legacy_mode is deliberately never printed here, same as the beacon token's value --
     // see this function's own doc comment.
