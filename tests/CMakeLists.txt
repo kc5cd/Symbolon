@@ -65,6 +65,17 @@ target_include_directories(test_qso PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unit
 target_link_libraries(test_qso PRIVATE sym_core)
 add_test(NAME core.qso_sequence COMMAND test_qso)
 
+# test_mnemosyne -- mnemosyne.c is planned-but-unbuilt per GitHub issue #10, no formal
+# phasing-table gate of its own yet; exercises the fake-sink pattern the same way
+# test_atropos.c drives a fake sym_host_t clock, no SQLite/file I/O involved.
+add_executable(test_mnemosyne
+    core/test_mnemosyne.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_mnemosyne PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_mnemosyne PRIVATE sym_core)
+add_test(NAME core.mnemosyne_observe COMMAND test_mnemosyne)
+
 # test_atropos -- Phase 4's own test gate (kickoff's phasing table): "atropos.c watchdog
 # fires under a simulated stall -- as a unit test -- before it's ever verified on the air".
 # Drives a fake sym_host_t clock by hand, no real time/sleeping involved.
