@@ -51,6 +51,25 @@ void apply_gates(const GateAccumulator& gates, cerberus_config_t& cerberus)
     }
 }
 
+// Shared by [gates]'s legacy_mode and [cat]'s tune_vfo -- both plain true/false booleans.
+// Anything other than exactly "true"/"false" (case-sensitive, matching this parser's own
+// plain style elsewhere) is treated as malformed, warned, and left at the field's default.
+bool parse_bool_or_warn(const std::string& path, int line_no, const std::string& key,
+    const std::string& value, bool& out)
+{
+    if (value == "true") {
+        out = true;
+        return true;
+    }
+    if (value == "false") {
+        out = false;
+        return true;
+    }
+    std::cerr << path << ":" << line_no << ": \"" << key << "\" must be \"true\" or \"false\", got \""
+              << value << "\", skipping\n";
+    return false;
+}
+
 } // namespace
 
 bool load_config_file(const std::string& path, SymbolonConfig& out)
@@ -128,11 +147,69 @@ bool load_config_file(const std::string& path, SymbolonConfig& out)
                     gates.freq_max_hz = std::stof(value);
                 } else if (key == "min_snr_db") {
                     gates.min_snr_db = std::stof(value);
+                } else if (key == "legacy_mode") {
+                    // Deliberately undocumented (see config.h's own doc comment) -- real,
+                    // parsed like any other key, just never mentioned in README/--help.
+                    parse_bool_or_warn(path, line_no, key, value, out.cerberus.beacon_allow_token_alone);
                 } else {
                     std::cerr << path << ":" << line_no << ": unknown [gates] key \"" << key << "\", skipping\n";
                 }
             } catch (const std::exception&) {
                 std::cerr << path << ":" << line_no << ": couldn't parse \"" << value << "\" as a number, skipping\n";
+            }
+        } else if (section == "device") {
+            if (key == "capture") {
+                out.app.capture_device = value;
+            } else if (key == "playback") {
+                out.app.playback_device = value;
+            } else {
+                std::cerr << path << ":" << line_no << ": unknown [device] key \"" << key << "\", skipping\n";
+            }
+        } else if (section == "cat") {
+            if (key == "port") {
+                out.app.cat_port = value;
+            } else if (key == "tune_vfo") {
+                parse_bool_or_warn(path, line_no, key, value, out.app.tune_vfo);
+            } else {
+                std::cerr << path << ":" << line_no << ": unknown [cat] key \"" << key << "\", skipping\n";
+            }
+        } else if (section == "operation") {
+            try {
+                if (key == "current_band") {
+                    out.app.current_band = value;
+                } else if (key == "tx_freq_hz") {
+                    out.app.tx_freq_hz = std::stod(value);
+                } else if (key == "tx_power_watts") {
+                    out.app.tx_power_watts = std::stod(value);
+                } else if (key == "tx_freq_tolerance_hz") {
+                    out.app.tx_freq_tolerance_hz = std::stod(value);
+                } else {
+                    std::cerr << path << ":" << line_no << ": unknown [operation] key \"" << key << "\", skipping\n";
+                }
+            } catch (const std::exception&) {
+                std::cerr << path << ":" << line_no << ": couldn't parse \"" << value << "\" as a number, skipping\n";
+            }
+        } else if (section == "autonomy") {
+            try {
+                if (key == "armed_timeout_minutes") {
+                    out.app.armed_timeout_minutes = std::stod(value);
+                } else if (key == "dead_man_minutes") {
+                    out.app.dead_man_minutes = std::stod(value);
+                } else if (key == "max_tx_per_hour") {
+                    out.app.max_tx_per_hour = std::stoi(value);
+                } else if (key == "max_tx_minutes") {
+                    out.app.max_tx_minutes = std::stod(value);
+                } else {
+                    std::cerr << path << ":" << line_no << ": unknown [autonomy] key \"" << key << "\", skipping\n";
+                }
+            } catch (const std::exception&) {
+                std::cerr << path << ":" << line_no << ": couldn't parse \"" << value << "\" as a number, skipping\n";
+            }
+        } else if (section == "logging") {
+            if (key == "log_db") {
+                out.app.log_db_path = value;
+            } else {
+                std::cerr << path << ":" << line_no << ": unknown [logging] key \"" << key << "\", skipping\n";
             }
         } else {
             std::cerr << path << ":" << line_no << ": key outside any known [section], skipping: " << trimmed << "\n";
