@@ -5,13 +5,13 @@ stations. It sits on a band, answers only a configured target station, and recor
 directions of every exchange — what the other end heard of you, and what you heard of them —
 into a queryable dataset. Full design and rationale: `symbolon-kickoff-prompt.md`.
 
-**Status:** early development. Phase 0 (build skeleton) and Phase 1 (receive-only decode)
-are complete — `symbolon` captures audio, decodes FT8 over a 15 s slot, and prints results
-to the console. Phase 2 (CAT via Hamlib, TX message synthesis) is also done, deliberately
-**without keying** — `symbolon` can talk CAT to a real rig (frequency, mode, preamp, AGC, TX
-power) and synthesize FT8 audio to a file, but nothing in this codebase asserts PTT yet.
-That's Phase 4's job, after the PTT watchdog exists — see `symbolon-kickoff-prompt.md`'s
-phasing table and its "never key the antenna first" verification ordering.
+**Status:** early development. Phase 0 (build skeleton), Phase 1 (receive-only decode), and
+Phase 2 (CAT via Hamlib, TX message synthesis, no keying) are complete. Phase 3 (rules
+engine, QSO state machine, `--confirm` dry-run mode) is complete. Phase 4 (PTT watchdog and
+safety interlocks, `--armed`/`--beacon` autonomy) is built and unit-tested, with the PTT
+watchdog itself bench-verified against real hardware — `--armed`/`--beacon` have not yet been
+run for real, per `symbolon-kickoff-prompt.md`'s "never key the antenna first" verification
+ordering.
 
 Phase 1's decoder recovers roughly 50-70% of what WSJT-X decodes on the same audio, both
 offline (a ~30-file WAV regression corpus) and live (WSJT-X-recorded samples) — a known,
@@ -91,6 +91,14 @@ symbolon --confirm                # confirm-mode QSO dry run (see below) -- need
 symbolon --current-band <name>    # tells confirm mode what band it's on, for the band gate
 symbolon --atropos-watchdog-test <port>   # bench test: real PTT, deliberately hung (see below)
 symbolon --atropos-test-power <watts>     # TX power for the watchdog test (default 0.5W)
+symbolon --armed <n>              # auto-sequence up to n QSOs, then disarm -- ACTUALLY TRANSMITS
+symbolon --beacon                 # run continuously against whitelist matches -- ACTUALLY TRANSMITS
+symbolon --tx-power <watts>       # TX power for armed/beacon (required, no default)
+symbolon --dead-man-minutes <m>   # auto-disarm after m minutes with no operator input/completed QSO
+symbolon --max-tx-per-hour <n>    # TX-slot budget per rolling hour (0 = unlimited)
+symbolon --max-tx-minutes <m>     # hard session TX-time cap (0 = unlimited)
+symbolon --armed-timeout-minutes <m>  # wall-clock bound for --armed, on top of its QSO count
+symbolon --tx-freq-tolerance-hz <hz>  # dial-frequency allowlist tolerance (default 100 Hz)
 ```
 
 `--confirm` is Phase 3 (rules engine + QSO state machine): matches incoming decodes against
@@ -103,6 +111,20 @@ PTT via CAT and deliberately never releases it, relying entirely on `core/atropo
 watchdog to force it off automatically around 13.5s (an independent hard backstop in the test
 harness itself fires at 16s and reports failure if the watchdog doesn't). Requires a dummy
 load, not an antenna, and prompts for confirmation before ever asserting PTT.
+
+`--armed`/`--beacon` are Phase 4's autonomy modes and **do actually transmit** — the only
+modes in this codebase that key PTT outside a dedicated bench test. Both need `--my-call`,
+`--whitelist`, `--current-band` (a recognized band name — its dial frequency becomes the
+`core/atropos.c` frequency-allowlist interlock, ±`--tx-freq-tolerance-hz`), `--cat-port`, and
+`--tx-power` (no default, set consciously). `--armed <n>` auto-sequences up to `n` complete
+QSOs and then disarms (or `--armed-timeout-minutes`, whichever comes first); `--beacon` runs
+continuously against whitelist matches with no QSO-count bound. Every atropos.c interlock
+applies — the fixed 13.5s PTT watchdog, `--dead-man-minutes` (auto-disarm on no operator
+input/completed exchange), `--max-tx-per-hour`, and `--max-tx-minutes` — and any interlock
+left at its default (0/unset) is printed as `DISABLED` in the startup banner rather than
+silently assumed, per this project's "the mechanisms are there and honest" stance. Both modes
+print a full interlock summary and require pressing Enter (after confirming the rig is on the
+intended antenna and power) before ever arming.
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
 keying**) — none of them ever assert PTT, including the power/mode/AGC/preamp controls.
