@@ -872,7 +872,7 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     const std::string& current_band, const std::string& cat_port, float tx_power_watts,
     float tx_freq_hz, int armed_qso_limit, double armed_timeout_minutes,
     double dead_man_minutes, int max_tx_per_hour, double max_tx_minutes,
-    double tx_freq_tolerance_hz)
+    double tx_freq_tolerance_hz, bool tune_vfo)
 {
     if (cfg.cerberus.my_call[0] == '\0' || cfg.cerberus.whitelist_count == 0) {
         std::cerr << "Armed/beacon mode needs --my-call and a non-empty whitelist (via --config and/or --whitelist).\n";
@@ -903,6 +903,24 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
         std::cerr << "Failed to open CAT on " << cat_port << "\n";
         return 1;
     }
+
+    // --tune-vfo: the app tunes the rig itself to --current-band's dial frequency. Off by
+    // default -- the operator remains responsible for having the rig on the right band, same
+    // as every prior session's manual --cat-set-freq workflow. A failed tune here is reported
+    // but not fatal: atropos_freq_allowed() reads the rig's *live* dial frequency before every
+    // auto-send regardless (see below), so a rig left on the wrong band still fails closed at
+    // send time even if this step didn't run or silently failed.
+    if (tune_vfo) {
+        if (hal_cat_set_freq_hz(cat, dial_hz) != HAL_RC_OK) {
+            std::cerr << "Warning: failed to tune VFO to " << dial_hz << " Hz: " << hal_cat_last_error(cat)
+                       << " -- continuing, but the rig may not be on the configured band.\n";
+        } else if (hal_cat_set_mode(cat, HAL_CAT_MODE_USB) != HAL_RC_OK) {
+            std::cerr << "Warning: failed to set USB mode: " << hal_cat_last_error(cat) << "\n";
+        } else {
+            std::cout << "Tuned VFO to " << dial_hz << " Hz (USB).\n";
+        }
+    }
+
     if (hal_cat_set_power_watts(cat, tx_power_watts) != HAL_RC_OK) {
         std::cerr << "Failed to set TX power to " << tx_power_watts << " W: " << hal_cat_last_error(cat) << "\n";
         hal_cat_close(cat);
@@ -937,6 +955,8 @@ int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
     }
     std::cout << "\nBand: " << current_band << " (dial " << dial_hz << " Hz +/- "
               << atropos_cfg.freq_tolerance_hz << " Hz)   TX power: " << tx_power_watts << " W\n"
+              << "VFO tuning: " << (tune_vfo ? "automatic (app tunes to the dial frequency above)"
+                                              : "operator responsibility (--tune-vfo not passed)") << "\n"
               << "PTT watchdog: 13.5s (fixed)\n"
               << "Dead-man timer: " << (dead_man_minutes > 0.0 ? (format_minutes(dead_man_minutes) + " min") : std::string("DISABLED")) << "\n"
               << "TX slots/hour cap: " << (max_tx_per_hour > 0 ? std::to_string(max_tx_per_hour) : std::string("DISABLED")) << "\n"
@@ -1170,6 +1190,7 @@ int main(int argc, char** argv)
     double max_tx_minutes = 0.0;
     double tx_freq_tolerance_hz = 100.0;
     float tx_power_watts = 0.0f;
+    bool tune_vfo = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -1316,6 +1337,10 @@ int main(int argc, char** argv)
             tx_freq_tolerance_hz = std::stod(argv[++i]);
             continue;
         }
+        if (std::strcmp(argv[i], "--tune-vfo") == 0) {
+            tune_vfo = true;
+            continue;
+        }
         if (std::strcmp(argv[i], "--tx-power") == 0 && i + 1 < argc) {
             tx_power_watts = std::stof(argv[++i]);
             continue;
@@ -1342,7 +1367,7 @@ int main(int argc, char** argv)
         SymbolonConfig cfg = build_effective_config(config_opts);
         return autonomous_mode(cfg, device_name, current_band, cat_opts.port, tx_power_watts,
             tx_test_freq_hz, beacon ? 0 : armed_qso_limit, armed_timeout_minutes,
-            dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz);
+            dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz, tune_vfo);
     }
     if (!atropos_test_port.empty()) {
         return atropos_watchdog_test_mode(atropos_test_port, atropos_test_power_w);

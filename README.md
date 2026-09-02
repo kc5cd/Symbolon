@@ -99,6 +99,7 @@ symbolon --max-tx-per-hour <n>    # TX-slot budget per rolling hour (0 = unlimit
 symbolon --max-tx-minutes <m>     # hard session TX-time cap (0 = unlimited)
 symbolon --armed-timeout-minutes <m>  # wall-clock bound for --armed, on top of its QSO count
 symbolon --tx-freq-tolerance-hz <hz>  # dial-frequency allowlist tolerance (default 100 Hz)
+symbolon --tune-vfo                # armed/beacon: let the app tune the VFO itself (default: operator does it)
 ```
 
 `--confirm` is Phase 3 (rules engine + QSO state machine): matches incoming decodes against
