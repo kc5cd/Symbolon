@@ -12,6 +12,10 @@ add_library(sym_core STATIC
     ring.c
     argus.h
     argus.c
+    cerberus.h
+    cerberus.c
+    qso.h
+    qso.c
     tx.h
     tx.c
 )

@@ -82,7 +82,21 @@ symbolon --cat-preamp <on|off>    # toggle the front-end preamp (with --cat-port
 symbolon --cat-agc <setting>      # off | slow | fast | auto (with --cat-port)
 symbolon --cat-set-power <watts>  # TX power, rounded to the nearest 0.5W (with --cat-port)
 symbolon --cat-power-cal <port> <csv> # interactive: step 0.5W increments, log the rig's own display
+symbolon --config <path>          # load whitelist/gates from an INI file
+symbolon --my-call <call> --my-grid <grid> --whitelist <csv>  # CLI overrides, win over --config
+symbolon --band <name> --freq-min <hz> --freq-max <hz> --min-snr <db>  # optional match gates
+symbolon --beacon-token-file <path>  # private free-text beacon token, kept out of --config
+symbolon --dump-config            # print the effective whitelist/gates config and exit
+symbolon --confirm                # confirm-mode QSO dry run (see below) -- needs --my-call + --whitelist
+symbolon --current-band <name>    # tells confirm mode what band it's on, for the band gate
 ```
+
+`--confirm` is Phase 3 (rules engine + QSO state machine): matches incoming decodes against
+the configured whitelist/gates and, for a recognized exchange step with a whitelisted station,
+composes the next reply and waits for any keypress (~2s window) to confirm — **dry run only**,
+it never opens CAT and never asserts PTT. A missed confirmation skips that opportunity and
+re-offers the same reply rather than sending late. Real keying is Phase 4, after
+`core/atropos.c`'s PTT watchdog exists.
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
 keying**) — none of them ever assert PTT, including the power/mode/AGC/preamp controls.

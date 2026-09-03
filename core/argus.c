@@ -161,6 +161,115 @@ static ftx_callsign_hash_interface_t s_hash_if = {
     .save_hash = argus_hash_save,
 };
 
+/* Inverse of argus_process_block()'s "scaled = 2*db + 240" waterfall quantization -- exact
+   except for the +/-0.5 LSB (2 steps/dB) the quantization itself already threw away, which is
+   negligible against the several-dB scale an SNR estimate is meaningful at. */
+static float argus_bin_db(const argus_t* argus, int block, int time_sub, int freq_sub, int bin)
+{
+    int offset = block * argus->wf.block_stride
+               + time_sub * (argus->wf.freq_osr * argus->wf.num_bins)
+               + freq_sub * argus->wf.num_bins
+               + bin;
+    return ((float)argus->wf.mag[offset] - 240.0f) / 2.0f;
+}
+
+static int argus_float_compare(const void* a, const void* b)
+{
+    float fa = *(const float*)a;
+    float fb = *(const float*)b;
+    return (fa > fb) - (fa < fb);
+}
+
+/* Slot-wide noise floor, in dB, as the median over a spread of (block, bin) samples at
+   time_sub=freq_sub=0 -- median rather than mean so a strong nearby signal (or two) doesn't
+   drag the estimate up. One measurement per argus_decode_slot() call, not per candidate: the
+   whole monitored window (hundreds of Hz) is wide enough relative to one FT8 signal's ~50 Hz
+   that a single slot-wide estimate is a fair background reference for every candidate in it. */
+static float argus_noise_floor_db(const argus_t* argus)
+{
+    int num_blocks = argus->wf.num_blocks;
+    int num_bins = argus->wf.num_bins;
+    if (num_blocks <= 0 || num_bins <= 0) {
+        return 0.0f;
+    }
+
+    size_t count = (size_t)num_blocks * (size_t)num_bins;
+    float* samples = (float*)malloc(count * sizeof(float));
+    if (samples == NULL) {
+        return 0.0f;
+    }
+
+    size_t n = 0;
+    for (int block = 0; block < num_blocks; ++block) {
+        for (int bin = 0; bin < num_bins; ++bin) {
+            samples[n++] = argus_bin_db(argus, block, 0, 0, bin);
+        }
+    }
+
+    qsort(samples, n, sizeof(float), argus_float_compare);
+    float median = samples[n / 2];
+    free(samples);
+    return median;
+}
+
+/* Signal power for one candidate, measured only at its own bin during the 21 Costas
+   sync-symbol positions (FT8_NUM_SYNC groups of FT8_LENGTH_SYNC symbols, at the protocol's
+   fixed FT8_SYNC_OFFSET spacing) -- the only symbol positions where the transmitted tone is
+   known rather than one of 8 possible data tones, so this is an unambiguous power reading
+   rather than a guess. Averages in linear power (not dB) across those 21 samples, then
+   converts the average back to dB -- dB-domain averaging biases low. */
+static float argus_estimate_snr_db(const argus_t* argus, const ftx_candidate_t* cand, float noise_floor_db)
+{
+    double power_sum = 0.0;
+    int n = 0;
+
+    for (int sync_group = 0; sync_group < FT8_NUM_SYNC; ++sync_group) {
+        int base_block = cand->time_offset + sync_group * FT8_SYNC_OFFSET;
+        for (int sym = 0; sym < FT8_LENGTH_SYNC; ++sym) {
+            int block = base_block + sym;
+            if (block < 0 || block >= argus->wf.num_blocks) {
+                continue;
+            }
+            float db = argus_bin_db(argus, block, cand->time_sub, cand->freq_sub, cand->freq_offset);
+            power_sum += pow(10.0, (double)db / 10.0);
+            ++n;
+        }
+    }
+
+    if (n == 0) {
+        return 0.0f;
+    }
+
+    float signal_db = 10.0f * log10f((float)(power_sum / n));
+
+    /* Both dB figures above are per-FFT-bin; normalize to the standard 2500 Hz reference
+       noise bandwidth ham SNR figures are conventionally quoted in (matches WSJT-X's own
+       reports), since white noise power scales with measurement bandwidth but the signal
+       (one ~6.25 Hz-wide FSK tone) doesn't. */
+    float bin_bw_hz = 1.0f / (argus->symbol_period_s * (float)argus->wf.freq_osr);
+    float bw_correction_db = 10.0f * log10f(2500.0f / bin_bw_hz);
+
+    /* ARGUS_SNR_CALIBRATION_DB absorbs everything the bandwidth-ratio term above doesn't
+       model in closed form: the Hann window's noise-equivalent bandwidth (1.5x its bin
+       spacing, not the bin spacing itself), the fft_norm scale factor argus_init() bakes into
+       the window before the FFT, and kiss_fftr's own normalization convention -- none of
+       which cancel out of a signal-minus-noise subtraction because the "signal" term is a
+       narrowband coherent tone while the "noise" term is a wideband median, so the two don't
+       carry the same effective-bandwidth correction. Deriving all of that by hand would mean
+       re-deriving kiss_fftr's normalization from scratch; instead this single constant is
+       fit empirically against known-power injected Gaussian noise (tests/core/test_argus_snr.c,
+       which is also what re-validates it) -- standard practice for real SNR estimators, whose
+       absolute calibration is always implementation-specific. Note the residual bias is not
+       perfectly flat across SNR: tests/core/test_argus_snr.c's cases show it shrinking at
+       very low SNR (the Costas-symbol "signal" measurement can't separate signal from noise
+       power there, so it over-reads slightly), a well-known estimator bias that gets worse
+       near/below the decode threshold -- expect several dB of residual error right where
+       real over-the-air propagation measurements matter most, not just synthetic noise. */
+    const float ARGUS_SNR_CALIBRATION_DB = 10.85f;
+
+    return signal_db - noise_floor_db - bw_correction_db + ARGUS_SNR_CALIBRATION_DB;
+}
+
 int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out)
 {
     memset(s_hash_table, 0, sizeof(s_hash_table));
@@ -171,6 +280,8 @@ int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out)
 
     ftx_candidate_t candidates[140];
     int num_candidates = ftx_find_candidates(&argus->wf, kMaxCandidates, candidates, kMinScore);
+
+    float noise_floor_db = argus_noise_floor_db(argus);
 
     int num_out = 0;
     for (int i = 0; i < num_candidates && num_out < max_out; ++i) {
@@ -189,11 +300,35 @@ int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out)
         }
 
         argus_decode_t* d = &out[num_out];
+        memset(d, 0, sizeof(*d));
         strncpy(d->text, text, FTX_MAX_MESSAGE_LENGTH - 1);
         d->text[FTX_MAX_MESSAGE_LENGTH - 1] = '\0';
+
+        /* Dispatch on the message's real type first, matching what ftx_message_decode()
+           itself does internally -- calling decode_std/decode_nonstd unconditionally would
+           reinterpret a free-text (or other-typed) payload's raw bits as if they were a
+           standard-message bit layout, which can spuriously "succeed" (RC_OK) with garbage
+           fields (confirmed: an unresolved-hash "<...>" call_to came out of a genuine
+           free-text message this way before this dispatch was added -- see
+           tests/core/test_argus_snr.c's test_free_text_has_no_structured_fields). */
+        ftx_field_t field_types[FTX_MAX_MESSAGE_FIELDS];
+        ftx_message_type_t msg_type = ftx_message_get_type(&message);
+        ftx_message_rc_t struct_rc = FTX_MESSAGE_RC_ERROR_TYPE;
+        if (msg_type == FTX_MESSAGE_TYPE_STANDARD) {
+            struct_rc = ftx_message_decode_std(&message, &s_hash_if, d->call_to, d->call_de, d->extra, field_types);
+        } else if (msg_type == FTX_MESSAGE_TYPE_NONSTD_CALL) {
+            struct_rc = ftx_message_decode_nonstd(&message, &s_hash_if, d->call_to, d->call_de, d->extra, field_types);
+        }
+        if (struct_rc != FTX_MESSAGE_RC_OK) {
+            d->call_to[0] = '\0';
+            d->call_de[0] = '\0';
+            d->extra[0] = '\0';
+        }
+
         d->freq_hz = ((float)argus->min_bin + (float)cand->freq_offset + (float)cand->freq_sub / (float)argus->wf.freq_osr) / argus->symbol_period_s;
         d->time_s = ((float)cand->time_offset + (float)cand->time_sub / (float)argus->wf.time_osr) * argus->symbol_period_s;
         d->score = cand->score;
+        d->snr_db = argus_estimate_snr_db(argus, cand, noise_floor_db);
         ++num_out;
     }
 

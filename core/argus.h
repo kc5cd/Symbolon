@@ -22,9 +22,28 @@ typedef struct {
 
 typedef struct {
     char text[FTX_MAX_MESSAGE_LENGTH];
+
+    /* Structured fields, populated via ftx_message_decode_std()/decode_nonstd() (tried in
+       that order) alongside the free-text decode above -- this is what lets cerberus.c match
+       on call_to/call_de directly (kickoff: "we match on structure, not string-scraping")
+       instead of re-parsing `text`. Empty ("") when neither structured decode succeeds (e.g.
+       a genuine free-text message like the private beacon token) -- callers fall back to
+       `text` for those. Sizes match ftx_message_decode_std()'s own buffers (ft8/message.c). */
+    char call_to[12];
+    char call_de[12];
+    char extra[20];
+
     float freq_hz;
     float time_s;
     int score;
+
+    /* Estimated SNR in dB, normalized to the standard 2500 Hz reference noise bandwidth (the
+       convention ham radio SNR figures are quoted in, matching WSJT-X's own reports) -- see
+       argus.c's argus_estimate_snr_db() for the method (Costas-sync-symbol signal power vs.
+       a slot-wide median noise floor, both read back from the quantized waterfall). This is
+       an approximation, not a bit-exact reproduction of WSJT-X's own algorithm; revisit
+       alongside the pre-Phase-7 decode-quality pass if it ever needs to be tighter. */
+    float snr_db;
 } argus_decode_t;
 
 typedef struct {

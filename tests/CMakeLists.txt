@@ -31,6 +31,40 @@ target_include_directories(test_tx PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity
 target_link_libraries(test_tx PRIVATE sym_core)
 add_test(NAME core.tx_roundtrip COMMAND test_tx)
 
+# test_argus_snr -- Phase 3 prep, not part of Phase 2's own gate: argus_decode_t grew
+# call_to/call_de/extra and snr_db fields cerberus.c's match engine needs. Verifies the SNR
+# estimate against known-power injected Gaussian noise (not just "a number came out") and
+# checks the structured-field fallback shape (empty for free text, populated for standard
+# messages) -- see core/argus.c's argus_estimate_snr_db() for the method.
+add_executable(test_argus_snr
+    core/test_argus_snr.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_argus_snr PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_argus_snr PRIVATE sym_core)
+add_test(NAME core.argus_snr COMMAND test_argus_snr)
+
+# test_cerberus -- Phase 3's own test gate (kickoff's phasing table): "table-driven cerberus.c
+# match tests". Builds argus_decode_t fixtures directly rather than synthesizing/decoding real
+# audio -- cerberus.c's boundary is argus_decode_t in, cerberus_result_t out.
+add_executable(test_cerberus
+    core/test_cerberus.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_cerberus PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_cerberus PRIVATE sym_core)
+add_test(NAME core.cerberus_match COMMAND test_cerberus)
+
+# test_qso -- Phase 3's other test gate (kickoff's phasing table): "qso.c sequence tests
+# driven by synthetic decodes". Same argus_decode_t-fixture approach as test_cerberus.
+add_executable(test_qso
+    core/test_qso.c
+    ${CMAKE_SOURCE_DIR}/third_party/unity/src/unity.c
+)
+target_include_directories(test_qso PRIVATE ${CMAKE_SOURCE_DIR}/third_party/unity/src)
+target_link_libraries(test_qso PRIVATE sym_core)
+add_test(NAME core.qso_sequence COMMAND test_qso)
+
 # test_hal -- Unity, same as test_core/test_ring. Exercises hal/cat_hamlib.c against
 # Hamlib's RIG_MODEL_DUMMY backend (in-process, no serial port, no real hardware, no
 # rigctld) -- this is Phase 2's own test gate per the kickoff's phasing table ("CAT
@@ -53,11 +87,18 @@ if(WIN32)
 endif()
 
 # test_app -- doctest (MIT), header-only. app/'s test framework; used only for app-layer
-# (C++17) logic.
+# (C++17) logic. test_smoke.cpp owns main() (DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN); test_config.cpp
+# adds cases into the same executable/registry, same pattern doctest itself expects.
 add_executable(test_app
     app/test_smoke.cpp
+    app/test_config.cpp
+    ${CMAKE_SOURCE_DIR}/app/config.h
+    ${CMAKE_SOURCE_DIR}/app/config.cpp
 )
-target_include_directories(test_app PRIVATE ${CMAKE_SOURCE_DIR}/third_party/doctest/doctest)
+target_include_directories(test_app PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/doctest/doctest
+    ${CMAKE_SOURCE_DIR}/app
+)
 target_link_libraries(test_app PRIVATE sym_core)
 add_test(NAME app.smoke COMMAND test_app)
 
