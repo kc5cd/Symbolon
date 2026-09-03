@@ -31,14 +31,19 @@
 
 #include "config.h"
 #include "wav_decode.h"
+#include "band_table.h"
+#include "tx_playback.h"
+#include "sqlite_sink.h"
 
 extern "C" {
 #include "argus.h"
+#include "atropos.h"
 #include "cerberus.h"
 #include "hal_audio.h"
 #include "hal_cat.h"
 #include "hal_time.h"
 #include "horae.h"
+#include "mnemosyne.h"
 #include "qso.h"
 #include "ring.h"
 #include "sym_types.h"
@@ -109,11 +114,37 @@ void capture_callback(const float* samples, uint32_t frame_count, void* user)
     sym_ring_write(ring, samples, frame_count);
 }
 
+// std::to_string(double) always pads to 6 decimal places ("0.300000") -- this trims trailing
+// zeros (and a trailing '.') for the banner text in autonomous_mode() below.
+std::string format_minutes(double minutes)
+{
+    std::string s = std::to_string(minutes);
+    size_t dot = s.find('.');
+    if (dot != std::string::npos) {
+        size_t last = s.find_last_not_of('0');
+        s.erase((last == dot) ? last : last + 1);
+    }
+    return s;
+}
+
 std::string find_default_capture_device_name()
 {
     hal_audio_device_t devices[32];
     size_t device_count = 0;
     hal_audio_enumerate(false, devices, 32, &device_count);
+    for (size_t i = 0; i < device_count; ++i) {
+        if (devices[i].is_default) {
+            return devices[i].name;
+        }
+    }
+    return (device_count > 0) ? devices[0].name : "(none found)";
+}
+
+std::string find_default_playback_device_name()
+{
+    hal_audio_device_t devices[32];
+    size_t device_count = 0;
+    hal_audio_enumerate(true, devices, 32, &device_count);
     for (size_t i = 0; i < device_count; ++i) {
         if (devices[i].is_default) {
             return devices[i].name;
@@ -134,13 +165,25 @@ int list_devices()
 {
     hal_audio_device_t devices[32];
     size_t device_count = 0;
+
     hal_audio_enumerate(false, devices, 32, &device_count);
+    std::cout << "Capture devices (--device):\n";
     for (size_t i = 0; i < device_count; ++i) {
         std::cout << (devices[i].is_default ? "* " : "  ") << devices[i].name << "\n";
     }
     if (device_count == 0) {
         std::cerr << "No capture devices found.\n";
     }
+
+    hal_audio_enumerate(true, devices, 32, &device_count);
+    std::cout << "\nPlayback devices (--playback-device, armed/beacon only):\n";
+    for (size_t i = 0; i < device_count; ++i) {
+        std::cout << (devices[i].is_default ? "* " : "  ") << devices[i].name << "\n";
+    }
+    if (device_count == 0) {
+        std::cerr << "No playback devices found.\n";
+    }
+
     return 0;
 }
 
@@ -529,6 +572,129 @@ int dump_config_mode(const ConfigOptions& opts)
     return 0;
 }
 
+// sym_host_t adapters -- the seam core/atropos.c is built around (see core/sym_types.h):
+// core/ never calls hal_*/OS functions directly, so app/ wires real HAL calls into the
+// plain function pointers atropos.c calls through instead. hal_rc_t *is* sym_rc_t (a plain
+// typedef alias, see hal/hal_types.h), so hal_ptt_set_adapter needs no translation at all.
+uint64_t hal_mono_us_adapter(void* user)
+{
+    (void)user;
+    return hal_time_mono_us();
+}
+
+uint64_t hal_utc_us_adapter(void* user)
+{
+    (void)user;
+    return hal_time_utc_us();
+}
+
+sym_rc_t hal_ptt_set_adapter(void* user, int assert_tx)
+{
+    hal_cat_t* cat = static_cast<hal_cat_t*>(user);
+    return hal_cat_set_ptt(cat, assert_tx != 0);
+}
+
+// Phase 4's own kickoff-specified bench verification, done for real against real hardware --
+// but only after core/atropos.c's own offline unit tests (tests/core/test_atropos.c) already
+// prove the mechanism with a fake clock, per the kickoff's explicit ordering ("fires under a
+// simulated stall -- as a unit test -- before it's ever verified on the air").
+//
+// Deliberately asserts PTT and then never releases it from this harness -- the entire point
+// is proving atropos_watchdog_tick() is what turns it back off, not this code. A second,
+// independent hard backstop (kHardBackstopUs, well past atropos.c's own 13.5s) exists only so
+// a bug in atropos.c can never leave the rig transmitting unattended during this test --
+// belt-and-suspenders, not a substitute for the real watchdog gate: if the backstop is ever
+// the thing that actually fires, that's reported as a FAIL, not treated as a safe fallback.
+int atropos_watchdog_test_mode(const std::string& port, float power_watts)
+{
+    hal_cat_config_t cfg{};
+    cfg.port = port.c_str();
+    cfg.baud = 19200;
+    cfg.rig_model = RIG_MODEL_X6200;
+    cfg.max_tx_power_watts = 8.0f;
+
+    hal_cat_t* cat = nullptr;
+    if (hal_cat_open(&cat, &cfg) != HAL_RC_OK) {
+        std::cerr << "Failed to open CAT on " << port << "\n";
+        return 1;
+    }
+
+    if (hal_cat_set_power_watts(cat, power_watts) != HAL_RC_OK) {
+        std::cerr << "Failed to set TX power to " << power_watts << " W: " << hal_cat_last_error(cat) << "\n";
+        hal_cat_close(cat);
+        return 1;
+    }
+
+    std::cout << "*** PTT WATCHDOG BENCH TEST ***\n"
+              << "About to assert PTT at " << power_watts << " W on " << port << ".\n"
+              << "This is a DELIBERATE hang: this test harness will NOT release PTT itself.\n"
+              << "core/atropos.c's watchdog is expected to force it off automatically at ~13.5s.\n"
+              << "An independent hard backstop in this harness will force it off at 16s and\n"
+              << "report FAILURE if the watchdog somehow doesn't fire first.\n\n"
+              << "Confirm the rig is connected to a dummy load, not an antenna, before continuing.\n"
+              << "Press Enter to assert PTT, or Ctrl+C to abort...\n";
+    std::string line;
+    std::getline(std::cin, line);
+
+    sym_host_t host{};
+    host.mono_us = hal_mono_us_adapter;
+    host.utc_us = hal_utc_us_adapter;
+    host.ptt_set = hal_ptt_set_adapter;
+    host.user = cat;
+
+    atropos_config_t atropos_cfg{};
+    atropos_cfg.ptt_watchdog_us = 13500000ULL; // 13.5s -- the kickoff's own spec constant
+
+    atropos_t atropos;
+    atropos_init(&atropos, &atropos_cfg, &host);
+
+    std::cout << "\nAsserting PTT now...\n";
+    if (hal_cat_set_ptt(cat, true) != HAL_RC_OK) {
+        std::cerr << "Failed to assert PTT: " << hal_cat_last_error(cat) << "\n";
+        hal_cat_close(cat);
+        return 1;
+    }
+    atropos_ptt_asserted(&atropos);
+
+    const uint64_t kHardBackstopUs = 16ULL * 1000000ULL;
+    uint64_t start_us = hal_time_mono_us();
+    bool watchdog_fired = false;
+
+    for (;;) {
+        uint64_t elapsed_us = hal_time_mono_us() - start_us;
+        std::cout << "\r  PTT held for " << (double)elapsed_us / 1000000.0 << "s..." << std::flush;
+
+        if (atropos_watchdog_tick(&atropos)) {
+            watchdog_fired = true;
+            std::cout << "\n\nWatchdog fired at " << (double)elapsed_us / 1000000.0 << "s -- PTT forced off.\n";
+            break;
+        }
+        if (elapsed_us >= kHardBackstopUs) {
+            std::cerr << "\n\n*** HARD BACKSTOP: watchdog did not fire by 16s -- forcing PTT off from this harness. ***\n";
+            hal_cat_set_ptt(cat, false);
+            hal_cat_close(cat);
+            return 1;
+        }
+        hal_time_sleep_us(200000);
+    }
+
+    bool still_asserted = true;
+    if (hal_cat_get_ptt(cat, &still_asserted) == HAL_RC_OK) {
+        std::cout << "Rig-reported PTT state: " << (still_asserted ? "STILL ASSERTED (FAIL)" : "off (confirmed)") << "\n";
+    } else {
+        std::cout << "Warning: couldn't read back PTT state: " << hal_cat_last_error(cat) << "\n";
+    }
+
+    hal_cat_close(cat);
+
+    if (watchdog_fired && !still_asserted) {
+        std::cout << "\n*** PASS: PTT watchdog test succeeded. ***\n";
+        return 0;
+    }
+    std::cerr << "\n*** FAIL: watchdog test did not complete cleanly. ***\n";
+    return 1;
+}
+
 // Phase 3: confirm mode. Same capture/slot/decode loop as the default listening mode below,
 // with every decode also run through cerberus_evaluate() and fed into the qso.c state
 // machine; when a reply is composed, the operator confirms with any keypress within a short
@@ -545,7 +711,8 @@ int dump_config_mode(const ConfigOptions& opts)
 // watchdog exists. current_band is a plain operator-supplied string (no CAT connection exists
 // in this mode to read it automatically) -- pass "" to leave any configured band gate always
 // failing closed rather than silently trusting an unverified value.
-int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, const std::string& current_band)
+int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, const std::string& current_band,
+    const std::string& log_db_path)
 {
     if (cfg.cerberus.my_call[0] == '\0' || cfg.cerberus.whitelist_count == 0) {
         std::cerr << "Confirm mode needs --my-call and a non-empty whitelist (via --config and/or --whitelist).\n";
@@ -605,6 +772,15 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
     qso_t qso;
     qso_init(&qso);
 
+    SqliteSink log_sink(log_db_path);
+    if (!log_sink.is_open()) {
+        std::cerr << "Warning: couldn't open observation log '" << log_db_path << "': "
+                  << log_sink.last_error() << " -- continuing without heard/QSO logging.\n";
+    }
+    mnemosyne_t mnemosyne;
+    mnemosyne_sink_t mnemosyne_sink = log_sink.as_sink();
+    mnemosyne_init(&mnemosyne, &mnemosyne_sink);
+
     const uint64_t kConfirmWindowUs = 2ULL * 1000000ULL; // ~2s, per the kickoff
 
     uint64_t current_slot_epoch_us = 0;
@@ -629,6 +805,7 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
 
                     const char* band_arg = current_band.empty() ? nullptr : current_band.c_str();
                     cerberus_result_t match = cerberus_evaluate(&cfg.cerberus, &decodes[i], band_arg);
+                    mnemosyne_observe(&mnemosyne, &decodes[i], &match, band_arg, current_slot_epoch_us);
 
                     if (match.matched) {
                         std::cout << "  -> matched (" << (match.is_beacon_token ? "beacon token" : "exchange") << ")\n";
@@ -669,10 +846,12 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
                         std::cout << "  Report he gave me:  " << qso.snr_i_got << " dB\n";
                         std::cout << "  Asymmetry: " << (qso.snr_i_got - qso.snr_i_sent) << " dB\n\n";
                     }
+                    mnemosyne_log_qso(&mnemosyne, &qso, &cfg.qso, current_slot_epoch_us);
                     qso_reset(&qso);
                 }
             }
             argus_reset(&argus);
+            mnemosyne_slot_reset(&mnemosyne);
             current_slot_epoch_us = slot.slot_epoch_us;
             slot_started = true;
         }
@@ -693,12 +872,378 @@ int confirm_mode(const SymbolonConfig& cfg, const std::string& device_name, cons
     return 0;
 }
 
+
+// Duplex audio context for armed/beacon mode: unlike confirm_mode()/the default listen loop
+// (capture only, hal_audio_open's `user` is a bare sym_ring_t*), this mode also plays a
+// synthesized TX signal back out, so the shared `user` pointer needs to reach both the
+// capture ring and the TxPlayback buffer -- hence its own small context struct and
+// trampolines rather than reusing capture_callback/tx_playback_callback directly.
+struct DuplexAudioContext {
+    sym_ring_t* ring;
+    TxPlayback* tx;
+};
+
+void duplex_capture_callback(const float* samples, uint32_t frame_count, void* user)
+{
+    auto* ctx = static_cast<DuplexAudioContext*>(user);
+    sym_ring_write(ctx->ring, samples, frame_count);
+}
+
+uint32_t duplex_playback_callback(float* out, uint32_t frame_count, void* user)
+{
+    auto* ctx = static_cast<DuplexAudioContext*>(user);
+    return ctx->tx->drain(out, frame_count);
+}
+
+// Phase 4: armed/beacon autonomy. Shared by both modes -- unlike confirm_mode() vs. the
+// default listen loop (which duplicate deliberately to avoid risking already-working code),
+// armed and beacon are both new here, so sharing from the start is the right call.
+// armed_qso_limit <= 0 means beacon (no QSO-count bound, runs until Ctrl+C or an atropos
+// interlock ends it); armed_timeout_minutes <= 0 means no wall-clock bound either way.
+//
+// This is the first code path in the whole project that can key PTT without a human
+// confirming each transmission -- see .claude/CLAUDE.md's "never key the antenna first"
+// ordering. Every interlock below is the real core/atropos.c mechanism, not a placeholder:
+// the frequency allowlist is derived from --current-band and refuses to arm at all if it
+// doesn't resolve; the dead-man timer, TX-slot budget, and session TX-time cap are all wired
+// from CLI flags (0/unset = disabled, matching atropos.h's own "mechanism exists, operator's
+// call" stance -- printed loudly in the startup banner below, not hidden).
+int autonomous_mode(const SymbolonConfig& cfg, const std::string& device_name,
+    const std::string& playback_device_name, const std::string& current_band,
+    const std::string& cat_port, float tx_power_watts,
+    float tx_freq_hz, int armed_qso_limit, double armed_timeout_minutes,
+    double dead_man_minutes, int max_tx_per_hour, double max_tx_minutes,
+    double tx_freq_tolerance_hz, bool tune_vfo, const std::string& log_db_path)
+{
+    if (cfg.cerberus.my_call[0] == '\0' || cfg.cerberus.whitelist_count == 0) {
+        std::cerr << "Armed/beacon mode needs --my-call and a non-empty whitelist (via --config and/or --whitelist).\n";
+        return 1;
+    }
+    uint64_t dial_hz = 0;
+    if (!band_to_dial_hz(current_band, &dial_hz)) {
+        std::cerr << "Armed/beacon mode needs a recognized --current-band (e.g. 20m) to derive the frequency allowlist.\n";
+        return 1;
+    }
+    if (cat_port.empty()) {
+        std::cerr << "Armed/beacon mode needs --cat-port.\n";
+        return 1;
+    }
+    if (tx_power_watts <= 0.0f) {
+        std::cerr << "Armed/beacon mode needs --tx-power (watts) set explicitly.\n";
+        return 1;
+    }
+
+    hal_cat_config_t cat_cfg{};
+    cat_cfg.port = cat_port.c_str();
+    cat_cfg.baud = 19200;
+    cat_cfg.rig_model = RIG_MODEL_X6200;
+    cat_cfg.max_tx_power_watts = 8.0f;
+
+    hal_cat_t* cat = nullptr;
+    if (hal_cat_open(&cat, &cat_cfg) != HAL_RC_OK) {
+        std::cerr << "Failed to open CAT on " << cat_port << "\n";
+        return 1;
+    }
+
+    // --tune-vfo: the app tunes the rig itself to --current-band's dial frequency. Off by
+    // default -- the operator remains responsible for having the rig on the right band, same
+    // as every prior session's manual --cat-set-freq workflow. A failed tune here is reported
+    // but not fatal: atropos_freq_allowed() reads the rig's *live* dial frequency before every
+    // auto-send regardless (see below), so a rig left on the wrong band still fails closed at
+    // send time even if this step didn't run or silently failed.
+    if (tune_vfo) {
+        if (hal_cat_set_freq_hz(cat, dial_hz) != HAL_RC_OK) {
+            std::cerr << "Warning: failed to tune VFO to " << dial_hz << " Hz: " << hal_cat_last_error(cat)
+                       << " -- continuing, but the rig may not be on the configured band.\n";
+        } else if (hal_cat_set_mode(cat, HAL_CAT_MODE_USB) != HAL_RC_OK) {
+            std::cerr << "Warning: failed to set USB mode: " << hal_cat_last_error(cat) << "\n";
+        } else {
+            std::cout << "Tuned VFO to " << dial_hz << " Hz (USB).\n";
+        }
+    }
+
+    if (hal_cat_set_power_watts(cat, tx_power_watts) != HAL_RC_OK) {
+        std::cerr << "Failed to set TX power to " << tx_power_watts << " W: " << hal_cat_last_error(cat) << "\n";
+        hal_cat_close(cat);
+        return 1;
+    }
+
+    sym_host_t host{};
+    host.mono_us = hal_mono_us_adapter;
+    host.utc_us = hal_utc_us_adapter;
+    host.ptt_set = hal_ptt_set_adapter;
+    host.user = cat;
+
+    atropos_config_t atropos_cfg{};
+    atropos_cfg.ptt_watchdog_us = 13500000ULL; // 13.5s -- the kickoff's own spec constant
+    atropos_cfg.dead_man_timeout_us = (uint64_t)(dead_man_minutes * 60.0 * 1000000.0);
+    atropos_cfg.max_tx_slots_per_hour = max_tx_per_hour;
+    atropos_cfg.max_tx_us_session = (uint64_t)(max_tx_minutes * 60.0 * 1000000.0);
+    atropos_cfg.allowed_freq_hz[0] = dial_hz;
+    atropos_cfg.allowed_freq_count = 1;
+    atropos_cfg.freq_tolerance_hz = (uint64_t)tx_freq_tolerance_hz;
+
+    atropos_t atropos;
+    atropos_init(&atropos, &atropos_cfg, &host);
+
+    bool is_beacon = (armed_qso_limit <= 0);
+    uint64_t armed_timeout_us = (armed_timeout_minutes > 0.0) ? (uint64_t)(armed_timeout_minutes * 60.0 * 1000000.0) : 0ULL;
+
+    // Issue #7's 5th safety interlock: warn-only, not a hard gate (unlike the frequency
+    // allowlist's fail-closed precedent) -- an operator who's deliberately running against a
+    // clock they know is fine (or whose sync tool this HAL check doesn't recognize) stays in
+    // control. FT8 needs ~1s decode alignment; an unsynced clock burns TX time without ever
+    // completing an exchange, so this is loud, not silent.
+    bool ntp_synced = false;
+    hal_rc_t ntp_rc = hal_time_ntp_synced(&ntp_synced);
+    std::string clock_sync_status = (ntp_rc != HAL_RC_OK)
+        ? "UNKNOWN (could not query OS time-sync status)"
+        : (ntp_synced ? "OK (OS reports NTP-synced)"
+                      : "*** NOT SYNCED -- FT8 needs ~1s timing accuracy; TX will likely never complete an exchange ***");
+
+    std::cout << "*** " << (is_beacon ? "BEACON" : "ARMED") << " MODE ***\n"
+              << "My call: " << cfg.cerberus.my_call << "  Whitelist:";
+    for (int i = 0; i < cfg.cerberus.whitelist_count; ++i) {
+        std::cout << " " << cfg.cerberus.whitelist[i];
+    }
+    std::cout << "\nBand: " << current_band << " (dial " << dial_hz << " Hz +/- "
+              << atropos_cfg.freq_tolerance_hz << " Hz)   TX power: " << tx_power_watts << " W\n"
+              << "VFO tuning: " << (tune_vfo ? "automatic (app tunes to the dial frequency above)"
+                                              : "operator responsibility (--tune-vfo not passed)") << "\n"
+              << "PTT watchdog: 13.5s (fixed)\n"
+              << "Clock sync: " << clock_sync_status << "\n"
+              << "Dead-man timer: " << (dead_man_minutes > 0.0 ? (format_minutes(dead_man_minutes) + " min") : std::string("DISABLED")) << "\n"
+              << "TX slots/hour cap: " << (max_tx_per_hour > 0 ? std::to_string(max_tx_per_hour) : std::string("DISABLED")) << "\n"
+              << "Session TX-time cap: " << (max_tx_minutes > 0.0 ? (format_minutes(max_tx_minutes) + " min") : std::string("DISABLED")) << "\n";
+    if (!is_beacon) {
+        std::cout << "Armed bound: " << armed_qso_limit << " QSO(s)"
+                  << (armed_timeout_us > 0 ? (" or " + format_minutes(armed_timeout_minutes) + " min") : std::string(""))
+                  << ", whichever comes first\n";
+    }
+    std::cout << "\n*** THIS MODE ACTUALLY TRANSMITS. Confirm the rig is on the intended antenna\n"
+                 "    and power setting before continuing. ***\n"
+                 "Press Enter to arm and start, or Ctrl+C to abort...\n";
+    std::string confirm_line;
+    std::getline(std::cin, confirm_line);
+
+    std::signal(SIGINT, on_sigint);
+    enable_raw_keyboard_mode();
+
+    atropos_arm(&atropos);
+
+    std::string capture_name = device_name.empty() ? find_default_capture_device_name() : device_name;
+    // No cross-defaulting from --device: on real USB audio codecs (the X6200 included) the
+    // capture and playback endpoints are typically named differently (e.g. "Microphone (...)"
+    // vs "Speakers (...)"), confirmed by --list-devices on this dev machine -- guessing one
+    // from the other risks silently falling back to the system default while the banner still
+    // claims the guessed name (exactly issue #3's original bug, just relabeled). Same
+    // system-default-when-unset pattern as --device itself.
+    std::string playback_name = playback_device_name.empty() ? find_default_playback_device_name() : playback_device_name;
+    std::cout << "Capture device: " << capture_name << "   Playback device: " << playback_name << "   Listening...\n";
+
+    const uint32_t kSampleRate = 12000;
+    const size_t kRingCapacity = (size_t)kSampleRate * 5;
+    std::vector<float> ring_backing(kRingCapacity);
+    sym_ring_t ring;
+    sym_ring_init(&ring, ring_backing.data(), kRingCapacity);
+
+    TxPlayback tx_playback;
+    DuplexAudioContext audio_ctx{ &ring, &tx_playback };
+
+    hal_audio_config_t audio_cfg{};
+    audio_cfg.sample_rate_hz = kSampleRate;
+    audio_cfg.capture_device = device_name.empty() ? nullptr : device_name.c_str();
+    audio_cfg.playback_device = playback_device_name.empty() ? nullptr : playback_device_name.c_str();
+
+    hal_audio_t* audio = nullptr;
+    if (hal_audio_open(&audio, &audio_cfg, duplex_capture_callback, duplex_playback_callback, &audio_ctx) != SYM_RC_OK) {
+        std::cerr << "Failed to open capture/playback device: " << hal_audio_last_error(audio) << "\n";
+        restore_keyboard_mode();
+        hal_cat_close(cat);
+        return 1;
+    }
+    if (hal_audio_start(audio) != SYM_RC_OK) {
+        std::cerr << "Failed to start audio: " << hal_audio_last_error(audio) << "\n";
+        hal_audio_close(audio);
+        restore_keyboard_mode();
+        hal_cat_close(cat);
+        return 1;
+    }
+
+    argus_config_t argus_cfg{};
+    argus_cfg.f_min_hz = 200.0f;
+    argus_cfg.f_max_hz = 3000.0f;
+    argus_cfg.sample_rate_hz = (int)kSampleRate;
+    argus_cfg.time_osr = 2;
+    argus_cfg.freq_osr = 2;
+
+    argus_t argus;
+    argus_init(&argus, &argus_cfg);
+
+    const int block_size = argus_block_size(&argus);
+    std::vector<float> block_buf((size_t)block_size);
+
+    qso_t qso;
+    qso_init(&qso);
+
+    SqliteSink log_sink(log_db_path);
+    if (!log_sink.is_open()) {
+        std::cerr << "Warning: couldn't open observation log '" << log_db_path << "': "
+                  << log_sink.last_error() << " -- continuing without heard/QSO logging.\n";
+    }
+    mnemosyne_t mnemosyne;
+    mnemosyne_sink_t mnemosyne_sink = log_sink.as_sink();
+    mnemosyne_init(&mnemosyne, &mnemosyne_sink);
+
+    uint64_t current_slot_epoch_us = 0;
+    bool slot_started = false;
+    int qso_completed_count = 0;
+    uint64_t session_start_us = hal_time_mono_us();
+
+    while (!g_stop && atropos.armed) {
+        if (key_was_pressed()) {
+            atropos_operator_input(&atropos);
+        }
+        atropos_watchdog_tick(&atropos);
+        if (atropos_dead_man_tick(&atropos)) {
+            std::cout << "\n*** Dead-man timer expired -- auto-disarmed. Stopping. ***\n";
+            break;
+        }
+        if (armed_timeout_us > 0 && (hal_time_mono_us() - session_start_us) >= armed_timeout_us) {
+            std::cout << "\n*** Armed timeout reached -- disarming. Stopping. ***\n";
+            atropos_disarm(&atropos);
+            break;
+        }
+
+        uint64_t utc_us = hal_time_utc_us();
+        horae_slot_t slot = horae_slot_at(utc_us);
+
+        if (!slot_started || slot.slot_epoch_us != current_slot_epoch_us) {
+            if (slot_started) {
+                argus_decode_t decodes[64];
+                int n = argus_decode_slot(&argus, decodes, 64);
+                time_t slot_time = (time_t)(current_slot_epoch_us / 1000000ULL);
+                struct tm tm_slot = *std::gmtime(&slot_time);
+
+                for (int i = 0; i < n; ++i) {
+                    print_decode_line(tm_slot.tm_hour, tm_slot.tm_min, tm_slot.tm_sec,
+                        decodes[i].text, decodes[i].freq_hz, decodes[i].time_s, decodes[i].score);
+
+                    const char* band_arg = current_band.empty() ? nullptr : current_band.c_str();
+                    cerberus_result_t match = cerberus_evaluate(&cfg.cerberus, &decodes[i], band_arg);
+                    mnemosyne_observe(&mnemosyne, &decodes[i], &match, band_arg, current_slot_epoch_us);
+
+                    if (match.matched) {
+                        std::cout << "  -> matched (" << (match.is_beacon_token ? "beacon token" : "exchange") << ")\n";
+                        qso_on_decode(&qso, &cfg.qso, &decodes[i]);
+                    } else if (qso.step == QSO_STEP_IDLE) {
+                        // cerberus_evaluate() deliberately rejects every CQ (see cerberus.h) --
+                        // this is qso.c's own separate, QSO-state-aware check for the one that
+                        // starts a new exchange.
+                        qso_on_cq_heard(&qso, &cfg.qso, &cfg.cerberus, &decodes[i]);
+                    }
+                }
+
+                if (qso.step == QSO_STEP_PENDING_CONFIRM) {
+                    uint64_t live_dial_hz = dial_hz;
+                    hal_cat_get_freq_hz(cat, &live_dial_hz); // best-effort; falls back to the
+                        // configured band's dial freq on a read failure -- still gated by
+                        // atropos_freq_allowed() below either way.
+
+                    bool freq_ok = atropos_freq_allowed(&atropos, live_dial_hz);
+                    bool budget_ok = atropos_tx_budget_ok(&atropos);
+
+                    if (freq_ok && budget_ok) {
+                        std::cout << "\n>>> Sending: \"" << qso.pending_text << "\" <<<\n";
+
+                        const int sample_rate_hz = 12000;
+                        const int num_samples = sym_tx_signal_samples(sample_rate_hz);
+                        std::vector<float> signal((size_t)num_samples);
+                        if (sym_tx_synthesize(qso.pending_text, tx_freq_hz, sample_rate_hz, signal.data()) == SYM_TX_OK) {
+                            tx_playback.arm(signal.data(), signal.size());
+
+                            if (hal_cat_set_ptt(cat, true) == HAL_RC_OK) {
+                                atropos_ptt_asserted(&atropos);
+                                while (!tx_playback.is_done() && atropos.ptt_asserted) {
+                                    atropos_watchdog_tick(&atropos);
+                                    hal_time_sleep_us(50000);
+                                }
+                                if (atropos.ptt_asserted) {
+                                    // Normal completion -- the watchdog never had to step in.
+                                    hal_cat_set_ptt(cat, false);
+                                    atropos_ptt_released(&atropos);
+                                } else {
+                                    std::cout << "  (watchdog forced PTT off mid-transmission)\n";
+                                }
+                                qso_confirm_sent(&qso);
+                                std::cout << "Sent.\n";
+                            } else {
+                                std::cerr << "Failed to assert PTT: " << hal_cat_last_error(cat) << " -- skipping this slot.\n";
+                                qso_confirm_missed(&qso);
+                            }
+                        } else {
+                            std::cerr << "Failed to synthesize \"" << qso.pending_text << "\" -- skipping this slot.\n";
+                            qso_confirm_missed(&qso);
+                        }
+                    } else {
+                        std::cout << "\n>>> Pending reply \"" << qso.pending_text << "\" blocked ("
+                                   << (!freq_ok ? "frequency allowlist" : "TX budget")
+                                   << ") -- skipping this slot, per the kickoff's \"never transmit late\" rule. <<<\n";
+                        qso_confirm_missed(&qso);
+                    }
+                }
+
+                if (qso.step == QSO_STEP_COMPLETE) {
+                    std::cout << "\n=== QSO complete with " << qso.peer_call << " ===\n";
+                    if (qso.snr_i_sent_valid && qso.snr_i_got_valid) {
+                        std::cout << "  Report I gave him: " << qso.snr_i_sent << " dB\n";
+                        std::cout << "  Report he gave me:  " << qso.snr_i_got << " dB\n";
+                        std::cout << "  Asymmetry: " << (qso.snr_i_got - qso.snr_i_sent) << " dB\n\n";
+                    }
+                    mnemosyne_log_qso(&mnemosyne, &qso, &cfg.qso, current_slot_epoch_us);
+                    qso_reset(&qso);
+                    atropos_operator_input(&atropos); // a completed exchange also counts as a
+                        // dead-man reset, per the user's choice this session -- not keypress-only.
+                    ++qso_completed_count;
+
+                    if (!is_beacon && qso_completed_count >= armed_qso_limit) {
+                        std::cout << "\n*** Armed limit of " << armed_qso_limit << " QSO(s) reached -- disarming. ***\n";
+                        atropos_disarm(&atropos);
+                    }
+                }
+            }
+            argus_reset(&argus);
+            mnemosyne_slot_reset(&mnemosyne);
+            current_slot_epoch_us = slot.slot_epoch_us;
+            slot_started = true;
+        }
+
+        if (sym_ring_available(&ring) >= (size_t)block_size) {
+            sym_ring_read(&ring, block_buf.data(), (size_t)block_size);
+            argus_process_block(&argus, block_buf.data());
+        } else {
+            hal_time_sleep_us(50000);
+        }
+    }
+
+    argus_free(&argus);
+    hal_audio_stop(audio);
+    hal_audio_close(audio);
+    hal_cat_close(cat);
+    restore_keyboard_mode();
+
+    std::cout << "\nStopped. " << qso_completed_count << " QSO(s) completed, "
+              << atropos.tx_slot_count << " TX slot(s), "
+              << ((double)atropos.total_tx_us_session / 1000000.0) << "s total TX time.\n";
+    return 0;
+}
 } // namespace
 
 int main(int argc, char** argv)
 {
     std::string decode_wav_path;
     std::string device_name;
+    std::string playback_device_name;
     std::string tx_test_text;
     std::string tx_test_wav_path;
     float tx_test_freq_hz = 1500.0f;
@@ -709,6 +1254,19 @@ int main(int argc, char** argv)
     bool dump_config = false;
     bool confirm = false;
     std::string current_band;
+    std::string atropos_test_port;
+    float atropos_test_power_w = 0.5f;
+    bool armed = false;
+    int armed_qso_limit = 0;
+    bool beacon = false;
+    double armed_timeout_minutes = 0.0;
+    double dead_man_minutes = 0.0;
+    int max_tx_per_hour = 0;
+    double max_tx_minutes = 0.0;
+    double tx_freq_tolerance_hz = 100.0;
+    float tx_power_watts = 0.0f;
+    bool tune_vfo = false;
+    std::string log_db_path = "symbolon.sqlite";
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -724,6 +1282,10 @@ int main(int argc, char** argv)
         }
         if (std::strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             device_name = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--playback-device") == 0 && i + 1 < argc) {
+            playback_device_name = argv[++i];
             continue;
         }
         if (std::strcmp(argv[i], "--tx-test") == 0 && i + 2 < argc) {
@@ -818,6 +1380,64 @@ int main(int argc, char** argv)
             current_band = argv[++i];
             continue;
         }
+        if (std::strcmp(argv[i], "--log-db") == 0 && i + 1 < argc) {
+            log_db_path = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--atropos-watchdog-test") == 0 && i + 1 < argc) {
+            atropos_test_port = argv[++i];
+            continue;
+        }
+        if (std::strcmp(argv[i], "--atropos-test-power") == 0 && i + 1 < argc) {
+            atropos_test_power_w = std::stof(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--armed") == 0 && i + 1 < argc) {
+            armed = true;
+            armed_qso_limit = std::stoi(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--armed-timeout-minutes") == 0 && i + 1 < argc) {
+            armed_timeout_minutes = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--beacon") == 0) {
+            beacon = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--dead-man-minutes") == 0 && i + 1 < argc) {
+            dead_man_minutes = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--max-tx-per-hour") == 0 && i + 1 < argc) {
+            max_tx_per_hour = std::stoi(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--max-tx-minutes") == 0 && i + 1 < argc) {
+            max_tx_minutes = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--tx-freq-tolerance-hz") == 0 && i + 1 < argc) {
+            tx_freq_tolerance_hz = std::stod(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--tune-vfo") == 0) {
+            tune_vfo = true;
+            continue;
+        }
+        if (std::strcmp(argv[i], "--tx-power") == 0 && i + 1 < argc) {
+            tx_power_watts = std::stof(argv[++i]);
+            continue;
+        }
+    }
+
+    if (armed && beacon) {
+        std::cerr << "--armed and --beacon are mutually exclusive.\n";
+        return 1;
+    }
+    if ((armed || beacon) && confirm) {
+        std::cerr << "--confirm cannot be combined with --armed/--beacon.\n";
+        return 1;
     }
 
     if (dump_config) {
@@ -825,7 +1445,16 @@ int main(int argc, char** argv)
     }
     if (confirm) {
         SymbolonConfig cfg = build_effective_config(config_opts);
-        return confirm_mode(cfg, device_name, current_band);
+        return confirm_mode(cfg, device_name, current_band, log_db_path);
+    }
+    if (armed || beacon) {
+        SymbolonConfig cfg = build_effective_config(config_opts);
+        return autonomous_mode(cfg, device_name, playback_device_name, current_band, cat_opts.port, tx_power_watts,
+            tx_test_freq_hz, beacon ? 0 : armed_qso_limit, armed_timeout_minutes,
+            dead_man_minutes, max_tx_per_hour, max_tx_minutes, tx_freq_tolerance_hz, tune_vfo, log_db_path);
+    }
+    if (!atropos_test_port.empty()) {
+        return atropos_watchdog_test_mode(atropos_test_port, atropos_test_power_w);
     }
     if (!decode_wav_path.empty()) {
         return decode_wav_mode(decode_wav_path);

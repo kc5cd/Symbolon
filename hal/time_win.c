@@ -2,6 +2,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdio.h>
+#include <string.h>
 
 uint64_t hal_time_utc_us(void)
 {
@@ -40,4 +42,43 @@ void hal_time_sleep_us(uint64_t us)
        callers asking for a short wait actually get one rather than returning immediately. */
     DWORD ms = (DWORD)((us + 999) / 1000);
     Sleep(ms);
+}
+
+hal_rc_t hal_time_ntp_synced(bool* out_synced)
+{
+    if (out_synced == NULL) {
+        return HAL_RC_INVALID_ARG;
+    }
+
+    /* No direct Win32 API reports "am I NTP-synced" the way w32tm's own status query does --
+       shelling out to the same tool an operator would run by hand is the pragmatic choice
+       here (see issue #7). 2>&1 folds stderr in so a stopped W32Time service still produces
+       parseable/empty output rather than silently vanishing. */
+    FILE* pipe = _popen("w32tm /query /status 2>&1", "r");
+    if (pipe == NULL) {
+        return HAL_RC_ERROR;
+    }
+
+    char line[256];
+    bool found_source_line = false;
+    bool synced = false;
+    while (fgets(line, sizeof(line), pipe) != NULL) {
+        if (strncmp(line, "Source:", 7) == 0) {
+            found_source_line = true;
+            /* Unsynced states report "Local CMOS Clock" (never synced since boot) or
+               "Free-running System Clock" (service running but unreachable) -- anything else
+               names a real time source, meaning w32tm itself considers the clock synced. */
+            synced = (strstr(line, "Local CMOS Clock") == NULL)
+                  && (strstr(line, "Free-running System Clock") == NULL);
+        }
+    }
+    _pclose(pipe);
+
+    if (!found_source_line) {
+        /* w32tm not installed, service not running, output didn't parse -- unknown, not
+           "unsynced"; let the caller decide how to treat that (see hal_time.h's doc comment). */
+        return HAL_RC_ERROR;
+    }
+    *out_synced = synced;
+    return HAL_RC_OK;
 }

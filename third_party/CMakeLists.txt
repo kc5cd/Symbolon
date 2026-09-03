@@ -92,3 +92,19 @@ if(WIN32)
         CACHE INTERNAL "Hamlib runtime DLLs to copy next to any exe linking the hamlib target"
     )
 endif()
+
+# SQLite (public domain), amalgamation snapshot -- see sqlite/VERSION.md for the exact
+# version/checksum. app/sqlite_sink.cpp (mnemosyne.c's app-side sink) is its only consumer;
+# core/ never links this directly (core/ makes no OS calls, see .claude/CLAUDE.md).
+add_library(sqlite3 STATIC
+    sqlite/sqlite3.c
+    sqlite/sqlite3.h
+)
+target_include_directories(sqlite3 PUBLIC sqlite)
+if(NOT WIN32)
+    # SQLite's amalgamation needs these on a typical Linux build (pthreads for its default
+    # threading mode, libdl for the loadable-extension path, libm for the math functions its
+    # query planner uses) -- Windows gets them from the CRT/kernel32 instead, no extra link
+    # needed there.
+    target_link_libraries(sqlite3 PUBLIC pthread dl m)
+endif()

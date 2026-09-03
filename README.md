@@ -5,13 +5,15 @@ stations. It sits on a band, answers only a configured target station, and recor
 directions of every exchange — what the other end heard of you, and what you heard of them —
 into a queryable dataset. Full design and rationale: `symbolon-kickoff-prompt.md`.
 
-**Status:** early development. Phase 0 (build skeleton) and Phase 1 (receive-only decode)
-are complete — `symbolon` captures audio, decodes FT8 over a 15 s slot, and prints results
-to the console. Phase 2 (CAT via Hamlib, TX message synthesis) is also done, deliberately
-**without keying** — `symbolon` can talk CAT to a real rig (frequency, mode, preamp, AGC, TX
-power) and synthesize FT8 audio to a file, but nothing in this codebase asserts PTT yet.
-That's Phase 4's job, after the PTT watchdog exists — see `symbolon-kickoff-prompt.md`'s
-phasing table and its "never key the antenna first" verification ordering.
+**Status:** early development. Phase 0 (build skeleton), Phase 1 (receive-only decode), and
+Phase 2 (CAT via Hamlib, TX message synthesis, no keying) are complete. Phase 3 (rules
+engine, QSO state machine, `--confirm` dry-run mode) is complete. Phase 4 (PTT watchdog and
+safety interlocks, `--armed`/`--beacon` autonomy) is built and unit-tested, with the PTT
+watchdog itself bench-verified against real hardware — `--armed`/`--beacon` have not yet been
+run for real, per `symbolon-kickoff-prompt.md`'s "never key the antenna first" verification
+ordering. `core/mnemosyne.c`'s heard/QSO observation log — planned as Phase 5 in the kickoff
+(GitHub issue #10) — is also built ahead of schedule and wired into `--confirm`/`--armed`/
+`--beacon` via `app/sqlite_sink.cpp`; see `--log-db` below.
 
 Phase 1's decoder recovers roughly 50-70% of what WSJT-X decodes on the same audio, both
 offline (a ~30-file WAV regression corpus) and live (WSJT-X-recorded samples) — a known,
@@ -70,8 +72,9 @@ subdirectory's own version notes.
 
 ```
 symbolon                          # live capture on the default audio device
-symbolon --list-devices           # show available capture devices
+symbolon --list-devices           # show available capture AND playback devices
 symbolon --device "<name>"        # capture on a specific device instead of the default
+symbolon --playback-device "<name>" # armed/beacon: play synthesized TX audio on a specific device (default: system default)
 symbolon --decode-wav <path>      # decode one WAV file and print results, no device needed
 symbolon --tx-test "<text>" <wav> # synthesize an FT8 message to a WAV file, no radio touched
 symbolon --tx-freq <hz>           # audio frequency for --tx-test (default 1500 Hz)
@@ -89,14 +92,62 @@ symbolon --beacon-token-file <path>  # private free-text beacon token, kept out 
 symbolon --dump-config            # print the effective whitelist/gates config and exit
 symbolon --confirm                # confirm-mode QSO dry run (see below) -- needs --my-call + --whitelist
 symbolon --current-band <name>    # tells confirm mode what band it's on, for the band gate
+symbolon --log-db <path>          # heard/QSO observation log, confirm+armed/beacon (default: symbolon.sqlite)
+symbolon --atropos-watchdog-test <port>   # bench test: real PTT, deliberately hung (see below)
+symbolon --atropos-test-power <watts>     # TX power for the watchdog test (default 0.5W)
+symbolon --armed <n>              # auto-sequence up to n QSOs, then disarm -- ACTUALLY TRANSMITS
+symbolon --beacon                 # run continuously against whitelist matches -- ACTUALLY TRANSMITS
+symbolon --tx-power <watts>       # TX power for armed/beacon (required, no default)
+symbolon --dead-man-minutes <m>   # auto-disarm after m minutes with no operator input/completed QSO
+symbolon --max-tx-per-hour <n>    # TX-slot budget per rolling hour (0 = unlimited)
+symbolon --max-tx-minutes <m>     # hard session TX-time cap (0 = unlimited)
+symbolon --armed-timeout-minutes <m>  # wall-clock bound for --armed, on top of its QSO count
+symbolon --tx-freq-tolerance-hz <hz>  # dial-frequency allowlist tolerance (default 100 Hz)
+symbolon --tune-vfo                # armed/beacon: let the app tune the VFO itself (default: operator does it)
 ```
 
 `--confirm` is Phase 3 (rules engine + QSO state machine): matches incoming decodes against
 the configured whitelist/gates and, for a recognized exchange step with a whitelisted station,
 composes the next reply and waits for any keypress (~2s window) to confirm — **dry run only**,
-it never opens CAT and never asserts PTT. A missed confirmation skips that opportunity and
-re-offers the same reply rather than sending late. Real keying is Phase 4, after
-`core/atropos.c`'s PTT watchdog exists.
+it never opens CAT and never asserts PTT.
+
+`--atropos-watchdog-test` is Phase 4's own kickoff-specified bench verification: asserts real
+PTT via CAT and deliberately never releases it, relying entirely on `core/atropos.c`'s
+watchdog to force it off automatically around 13.5s (an independent hard backstop in the test
+harness itself fires at 16s and reports failure if the watchdog doesn't). Requires a dummy
+load, not an antenna, and prompts for confirmation before ever asserting PTT.
+
+`--armed`/`--beacon` are Phase 4's autonomy modes and **do actually transmit** — the only
+modes in this codebase that key PTT outside a dedicated bench test. Both need `--my-call`,
+`--whitelist`, `--current-band` (a recognized band name — its dial frequency becomes the
+`core/atropos.c` frequency-allowlist interlock, ±`--tx-freq-tolerance-hz`), `--cat-port`, and
+`--tx-power` (no default, set consciously). Both open duplex audio (capture for decoding,
+playback for the synthesized TX signal) — `--playback-device` selects the playback side
+explicitly, same as `--device` already does for capture; on a real USB audio codec (the
+X6200's included) the two directions are commonly named differently (e.g. `Microphone (...)`
+vs `Speakers (...)`), so neither is ever guessed from the other — omitting either flag falls
+back to that direction's system default, and both resolved names are printed in the startup
+banner so it's never silently wrong. `--armed <n>` auto-sequences up to `n` complete
+QSOs and then disarms (or `--armed-timeout-minutes`, whichever comes first); `--beacon` runs
+continuously against whitelist matches with no QSO-count bound. Every atropos.c interlock
+applies — the fixed 13.5s PTT watchdog, `--dead-man-minutes` (auto-disarm on no operator
+input/completed exchange), `--max-tx-per-hour`, and `--max-tx-minutes` — and any interlock
+left at its default (0/unset) is printed as `DISABLED` in the startup banner rather than
+silently assumed, per this project's "the mechanisms are there and honest" stance. A separate
+pre-flight check (not an atropos.c interlock, and not a hard gate) also queries the OS's own
+NTP-sync status and prints it in the banner — FT8 needs roughly ±1s timing accuracy, so an
+unsynced clock is flagged loudly but arming is still the operator's call. Both modes
+print a full interlock summary and require pressing Enter (after confirming the rig is on the
+intended antenna and power) before ever arming.
+
+`--log-db <path>` (both `--confirm` and `--armed`/`--beacon`) is `core/mnemosyne.c`'s
+observation log: every decode from a whitelisted station is recorded regardless of whether
+it was directed at me, a CQ, or ever became a full exchange — "heard but not worked" is
+still real propagation evidence for this project's core research goal. Completed QSOs are
+recorded too, with both SNR directions and the asymmetry the whole project exists to measure.
+Written via `app/sqlite_sink.cpp` to a SQLite database (WAL mode) plus a `_observations.csv`/
+`_qso_log.csv` sidecar next to it for eyeballing without a SQLite client. A failure to open
+the log is a warning, not fatal — confirm/armed/beacon keep running without it.
 
 `--tx-test` and everything under `--cat-port` are Phase 2 (CAT + TX synthesis, **no
 keying**) — none of them ever assert PTT, including the power/mode/AGC/preamp controls.

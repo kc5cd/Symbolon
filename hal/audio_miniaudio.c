@@ -100,22 +100,35 @@ hal_rc_t hal_audio_open(hal_audio_t** out, const hal_audio_config_t* config,
     }
     audio->context_initialized = true;
 
-    /* NULL capture_device (the common case, per hal_audio_config_t's own doc) leaves
-       pDeviceID NULL, which miniaudio resolves to the system default -- no enumeration
-       needed on that path at all. */
+    /* NULL capture_device/playback_device (the common case, per hal_audio_config_t's own
+       doc) leaves pDeviceID NULL, which miniaudio resolves to the system default -- no
+       enumeration needed on that path at all. */
     const ma_device_id* capture_id = NULL;
     ma_device_id resolved_capture_id;
-    if (config->capture_device != NULL) {
+    const ma_device_id* playback_id = NULL;
+    ma_device_id resolved_playback_id;
+    if (config->capture_device != NULL || config->playback_device != NULL) {
         ma_device_info* playback_infos;
         ma_uint32 playback_count;
         ma_device_info* capture_infos;
         ma_uint32 capture_count;
         if (ma_context_get_devices(&audio->context, &playback_infos, &playback_count, &capture_infos, &capture_count) == MA_SUCCESS) {
-            for (ma_uint32 i = 0; i < capture_count; ++i) {
-                if (strcmp(capture_infos[i].name, config->capture_device) == 0) {
-                    resolved_capture_id = capture_infos[i].id;
-                    capture_id = &resolved_capture_id;
-                    break;
+            if (config->capture_device != NULL) {
+                for (ma_uint32 i = 0; i < capture_count; ++i) {
+                    if (strcmp(capture_infos[i].name, config->capture_device) == 0) {
+                        resolved_capture_id = capture_infos[i].id;
+                        capture_id = &resolved_capture_id;
+                        break;
+                    }
+                }
+            }
+            if (config->playback_device != NULL) {
+                for (ma_uint32 i = 0; i < playback_count; ++i) {
+                    if (strcmp(playback_infos[i].name, config->playback_device) == 0) {
+                        resolved_playback_id = playback_infos[i].id;
+                        playback_id = &resolved_playback_id;
+                        break;
+                    }
                 }
             }
         }
@@ -133,6 +146,7 @@ hal_rc_t hal_audio_open(hal_audio_t** out, const hal_audio_config_t* config,
         device_config.periodSizeInFrames = config->period_frames;
     }
     if (on_playback != NULL) {
+        device_config.playback.pDeviceID = playback_id;
         device_config.playback.format = ma_format_f32;
         device_config.playback.channels = 1;
     }

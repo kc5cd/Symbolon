@@ -5,9 +5,15 @@ add_executable(symbolon
     wav_decode.cpp
     config.h
     config.cpp
+    band_table.h
+    band_table.cpp
+    tx_playback.h
+    tx_playback.cpp
+    sqlite_sink.h
+    sqlite_sink.cpp
 )
 
-target_link_libraries(symbolon PRIVATE sym_core sym_hal ft8_lib_wave)
+target_link_libraries(symbolon PRIVATE sym_core sym_hal ft8_lib_wave sqlite3)
 
 if(WIN32)
     # sym_hal links Hamlib as a shared import (see third_party/CMakeLists.txt); its DLL and

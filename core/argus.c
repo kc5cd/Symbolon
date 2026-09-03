@@ -283,8 +283,18 @@ int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out)
 
     float noise_floor_db = argus_noise_floor_db(argus);
 
+    /* ft8_lib's candidate search often finds the same underlying transmission at more than
+       one adjacent frequency bin (bin width = 1/(symbol_period_s*freq_osr), ~3 Hz at this
+       project's typical time_osr=2/freq_osr=2 config) -- each one independently decodes to
+       the same message text. Collapse those into a single entry (keeping whichever candidate
+       scored higher) instead of surfacing the same transmission twice per slot -- see issue
+       #9. Matched on exact text equality within this frequency window; two distinct
+       transmissions carrying identical text within one slot aren't expected in practice. */
+    const float bin_bw_hz = 1.0f / (argus->symbol_period_s * (float)argus->wf.freq_osr);
+    const float kDedupFreqWindowHz = 3.0f * bin_bw_hz;
+
     int num_out = 0;
-    for (int i = 0; i < num_candidates && num_out < max_out; ++i) {
+    for (int i = 0; i < num_candidates; ++i) {
         const ftx_candidate_t* cand = &candidates[i];
 
         ftx_message_t message;
@@ -299,10 +309,10 @@ int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out)
             continue;
         }
 
-        argus_decode_t* d = &out[num_out];
-        memset(d, 0, sizeof(*d));
-        strncpy(d->text, text, FTX_MAX_MESSAGE_LENGTH - 1);
-        d->text[FTX_MAX_MESSAGE_LENGTH - 1] = '\0';
+        argus_decode_t d;
+        memset(&d, 0, sizeof(d));
+        strncpy(d.text, text, FTX_MAX_MESSAGE_LENGTH - 1);
+        d.text[FTX_MAX_MESSAGE_LENGTH - 1] = '\0';
 
         /* Dispatch on the message's real type first, matching what ftx_message_decode()
            itself does internally -- calling decode_std/decode_nonstd unconditionally would
@@ -315,20 +325,41 @@ int argus_decode_slot(argus_t* argus, argus_decode_t* out, int max_out)
         ftx_message_type_t msg_type = ftx_message_get_type(&message);
         ftx_message_rc_t struct_rc = FTX_MESSAGE_RC_ERROR_TYPE;
         if (msg_type == FTX_MESSAGE_TYPE_STANDARD) {
-            struct_rc = ftx_message_decode_std(&message, &s_hash_if, d->call_to, d->call_de, d->extra, field_types);
+            struct_rc = ftx_message_decode_std(&message, &s_hash_if, d.call_to, d.call_de, d.extra, field_types);
         } else if (msg_type == FTX_MESSAGE_TYPE_NONSTD_CALL) {
-            struct_rc = ftx_message_decode_nonstd(&message, &s_hash_if, d->call_to, d->call_de, d->extra, field_types);
+            struct_rc = ftx_message_decode_nonstd(&message, &s_hash_if, d.call_to, d.call_de, d.extra, field_types);
         }
         if (struct_rc != FTX_MESSAGE_RC_OK) {
-            d->call_to[0] = '\0';
-            d->call_de[0] = '\0';
-            d->extra[0] = '\0';
+            d.call_to[0] = '\0';
+            d.call_de[0] = '\0';
+            d.extra[0] = '\0';
         }
 
-        d->freq_hz = ((float)argus->min_bin + (float)cand->freq_offset + (float)cand->freq_sub / (float)argus->wf.freq_osr) / argus->symbol_period_s;
-        d->time_s = ((float)cand->time_offset + (float)cand->time_sub / (float)argus->wf.time_osr) * argus->symbol_period_s;
-        d->score = cand->score;
-        d->snr_db = argus_estimate_snr_db(argus, cand, noise_floor_db);
+        d.freq_hz = ((float)argus->min_bin + (float)cand->freq_offset + (float)cand->freq_sub / (float)argus->wf.freq_osr) / argus->symbol_period_s;
+        d.time_s = ((float)cand->time_offset + (float)cand->time_sub / (float)argus->wf.time_osr) * argus->symbol_period_s;
+        d.score = cand->score;
+        d.snr_db = argus_estimate_snr_db(argus, cand, noise_floor_db);
+
+        int dup_index = -1;
+        for (int j = 0; j < num_out; ++j) {
+            if (fabsf(out[j].freq_hz - d.freq_hz) <= kDedupFreqWindowHz && strcmp(out[j].text, d.text) == 0) {
+                dup_index = j;
+                break;
+            }
+        }
+
+        if (dup_index >= 0) {
+            if (d.score > out[dup_index].score) {
+                out[dup_index] = d;
+            }
+            continue;
+        }
+
+        if (num_out >= max_out) {
+            continue;
+        }
+
+        out[num_out] = d;
         ++num_out;
     }
 
