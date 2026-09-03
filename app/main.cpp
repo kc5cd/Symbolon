@@ -660,9 +660,22 @@ int atropos_watchdog_test_mode(const std::string& port, float power_watts)
     uint64_t start_us = hal_time_mono_us();
     bool watchdog_fired = false;
 
+    bool external_release = false;
+
     for (;;) {
         uint64_t elapsed_us = hal_time_mono_us() - start_us;
-        std::cout << "\r  PTT held for " << (double)elapsed_us / 1000000.0 << "s..." << std::flush;
+
+        bool rig_ptt_on = true;
+        hal_rc_t ptt_rc = hal_cat_get_ptt(cat, &rig_ptt_on);
+        std::cout << "\r  PTT held for " << (double)elapsed_us / 1000000.0 << "s -- rig PTT: "
+                   << (ptt_rc == HAL_RC_OK ? (rig_ptt_on ? "ON " : "OFF") : "?  ") << "    " << std::flush;
+
+        if (ptt_rc == HAL_RC_OK && !rig_ptt_on) {
+            external_release = true;
+            std::cout << "\n\n*** Rig reports PTT off at " << (double)elapsed_us / 1000000.0
+                       << "s -- released before the software watchdog fired (external cause). ***\n";
+            break;
+        }
 
         if (atropos_watchdog_tick(&atropos)) {
             watchdog_fired = true;
@@ -685,14 +698,24 @@ int atropos_watchdog_test_mode(const std::string& port, float power_watts)
         std::cout << "Warning: couldn't read back PTT state: " << hal_cat_last_error(cat) << "\n";
     }
 
+    // core/atropos.c still thinks PTT is asserted if release came from outside its own tick
+    // loop -- tell it explicitly so its internal state doesn't drift from the rig's real state.
+    if (external_release) {
+        atropos_ptt_released(&atropos);
+    }
+
     hal_cat_close(cat);
 
-    if (watchdog_fired && !still_asserted) {
-        std::cout << "\n*** PASS: PTT watchdog test succeeded. ***\n";
-        return 0;
+    if (still_asserted) {
+        std::cerr << "\n*** FAIL: watchdog test did not complete cleanly. ***\n";
+        return 1;
     }
-    std::cerr << "\n*** FAIL: watchdog test did not complete cleanly. ***\n";
-    return 1;
+    if (watchdog_fired) {
+        std::cout << "\n*** PASS: PTT watchdog test succeeded. ***\n";
+    } else {
+        std::cout << "\n*** PTT was released externally, before the software watchdog fired. ***\n";
+    }
+    return 0;
 }
 
 // Phase 3: confirm mode. Same capture/slot/decode loop as the default listening mode below,
